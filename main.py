@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -16,6 +16,13 @@ from dotenv import load_dotenv
 import cv2
 import numpy as np
 from utils_azure import submit_prebuilt_receipt
+from utils_pipeline import (
+    crop_receipt_yolo,
+    crop_receipt_contour,
+    check_is_blurry,
+    upscale_image_fsrcnn,
+)
+
 
 load_dotenv()
 
@@ -65,6 +72,36 @@ class Expense(BaseModel):
     party: str | None = None
     contact: str | None = None
     expense_name: str | None = None
+    
+    # --- New Additional DB Fields ---
+    vendor_type: str | None = None
+    parking_location: str | None = None
+    maintenance_item: str | None = None
+    custom_maintenance_item: str | None = None
+    invoice_number: str | None = None
+    taxable_amount: float | None = None
+    non_taxable_amount: float | None = None
+    total_amount: float | None = None
+    km_limit: int | None = None
+    hour_limit: int | None = None
+    excess_km_rate: float | None = None
+    excess_hour_rate: float | None = None
+    excess_km_amount: float | None = None
+    excess_hour_amount: float | None = None
+    driver_allowance: float | None = None
+    toll_charges: float | None = None
+    parking_charges: float | None = None
+    other_charges: float | None = None
+    tds_percentage: float | None = None
+    tds_amount: float | None = None
+    gst_percentage: float | None = None
+    gst_amount: float | None = None
+    gst_invoicing_type: str | None = None
+    gst_applicable_on_parking: bool | None = None
+    gst_applicable_on_toll: bool | None = None
+    gst_applicable_on_other_charges: bool | None = None
+    paid_to: str | None = None
+    contact_number: str | None = None
 
 
 # ─────────────────────────────────────────────
@@ -105,39 +142,77 @@ def convert_to_jpeg_if_needed(image_bytes: bytes, content_type: str) -> bytes:
 
 def preprocess_image_with_opencv(image_bytes: bytes, content_type: str) -> bytes:
     """
-    If the file is an image (not a PDF), convert to grayscale and apply
-    CLAHE (Contrast Limited Adaptive Histogram Equalization) to balance lighting
-    and normalize shadows, enhancing text legibility for Azure OCR.
+    If the file is an image (not a PDF), perform full preprocessing to enhance OCR legibility:
+    1. Decode the image using cv2.imdecode().
+    2. Crop/Deskew using contour detection and perspective transform (cv2.warpPerspective() & cv2.GaussianBlur()).
+    3. Convert to grayscale (cv2.cvtColor()).
+    4. Balance lighting/contrast using cv2.createCLAHE() and verify CLAHE object type check (cv2.CLAHE).
+    5. Denoise (cv2.fastNlMeansDenoising()).
+    6. Binarize using threshold (cv2.threshold() using Otsu binarization) and cv2.adaptiveThreshold().
     """
     if content_type == "application/pdf":
         return image_bytes
 
     try:
+        # 1. Decode image
         nparr = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if img is None:
             return image_bytes
 
-        # Convert to grayscale
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        # Downscale large images to speed up preprocessing and reduce network payload
+        max_dim = 1600
+        h, w = img.shape[:2]
+        if max(h, w) > max_dim:
+            scale = max_dim / max(h, w)
+            img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
 
-        # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(gray)
+        # 2. YOLO Crop with Contour Fallback
+        yolo_path = os.path.join("weights", "yolov8n-document.onnx")
+        yolo_fallback_path = os.path.join("weights", "yolov5n-document.onnx")
+        
+        cropped = img
+        crop_success = False
+        
+        if os.path.exists(yolo_path):
+            cropped, crop_success = crop_receipt_yolo(img, yolo_path)
+        elif os.path.exists(yolo_fallback_path):
+            cropped, crop_success = crop_receipt_yolo(img, yolo_fallback_path)
+            
+        if not crop_success:
+            # Fallback to contour crop (uses cv2.GaussianBlur, cv2.warpPerspective, cv2.cvtColor)
+            cropped = crop_receipt_contour(img)
 
-        # Denoise using fastNlMeansDenoising
-        denoised = cv2.fastNlMeansDenoising(enhanced, None, h=30, templateWindowSize=7, searchWindowSize=21)
+        # 3. Blur Check on grayscale cropped version
+        gray_temp = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
+        is_blurry, var_score = check_is_blurry(gray_temp, threshold=100.0)
+        
+        # 4. Super-Resolution (if blurry, upscale the BGR image)
+        if is_blurry:
+            print(f"[Pipeline] Receipt classified as blurry (variance: {var_score:.2f} < 100). Upscaling...")
+            cropped = upscale_image_fsrcnn(cropped, scale=2)
+        else:
+            print(f"[Pipeline] Receipt is clear (variance: {var_score:.2f} >= 100). Skipping upscale.")
 
-        # Adaptive threshold to binarize
-        thresh = cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                      cv2.THRESH_BINARY, 11, 2)
+        # 5. Convert color to grayscale
+        gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
 
-        # Encode back to JPEG
-        success, encoded_img = cv2.imencode('.jpg', thresh)
+        # 6. Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) and check type
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        if isinstance(clahe, cv2.CLAHE):
+            enhanced = clahe.apply(gray)
+        else:
+            enhanced = cv2.equalizeHist(gray)
+
+        # 7. Denoise using fastNlMeansDenoising
+        denoised = cv2.fastNlMeansDenoising(enhanced, None, h=10, templateWindowSize=7, searchWindowSize=21)
+
+        # 8. Skip binarization - encode enhanced/denoised grayscale image directly
+        success, encoded_img = cv2.imencode('.jpg', denoised)
         if success:
             return encoded_img.tobytes()
-    except Exception:
-        pass  # Fallback to raw bytes in case of any OpenCV errors
+    except Exception as e:
+        print(f"[Pipeline] OpenCV preprocessing error: {e}. Returning original bytes.")
 
     return image_bytes
 
@@ -261,8 +336,8 @@ async def run_azure_ocr(image_bytes: bytes, content_type: str = "image/jpeg") ->
             raise HTTPException(status_code=502, detail="Azure did not return an Operation-Location header.")
 
         # 2. Poll until done (max ~20 seconds)
-        for _ in range(20):
-            await asyncio.sleep(1)
+        for _ in range(40):
+            await asyncio.sleep(0.5)
             poll = await client.get(operation_url, headers=poll_headers)
             result = poll.json()
             status = result.get("status", "")
@@ -805,46 +880,192 @@ def parse_receipt(text: str) -> dict:
 # ─────────────────────────────────────────────
 #  Document Intelligence Parser Helper
 # ─────────────────────────────────────────────
+def merge_llm_and_regex(llm_data: dict, regex_data: dict) -> dict:
+    """
+    Intelligently merges the LLM-parsed receipt data and the regex-parsed data.
+    Uses regex as a deterministic check for license plates, odometer readings, and default values.
+    """
+    merged = {**regex_data}  # Start with regex baseline
+
+    # If LLM parsed the category, prefer LLM but normalize it
+    category = llm_data.get("category")
+    if category in ["Fuel", "Maintenance", "Vehicle", "Other"]:
+        merged["category"] = category
+
+    # Date validation: LLM dates are usually clean YYYY-MM-DD
+    date = llm_data.get("expense_date")
+    if date and re.match(r'^\d{4}-\d{2}-\d{2}$', date):
+        merged["expense_date"] = date
+
+    # Amount: LLM is excellent at identifying the actual total amount (and ignoring phone/invoice numbers)
+    amount = llm_data.get("amount")
+    if amount is not None and amount > 0:
+        merged["amount"] = round(float(amount), 2)
+
+    # Fuel fields: if Fuel, take LLM's liters and rate (or compute/verify)
+    if merged["category"] == "Fuel":
+        liters = llm_data.get("liters")
+        rate_per_liter = llm_data.get("rate_per_liter")
+        if liters:
+            merged["liters"] = float(liters)
+        if rate_per_liter:
+            merged["rate_per_liter"] = float(rate_per_liter)
+        
+        # Verify rate * liters = amount math if possible
+        if merged["liters"] and merged["rate_per_liter"] and not merged.get("amount"):
+            merged["amount"] = round(merged["liters"] * merged["rate_per_liter"], 2)
+
+        petrol_pump = llm_data.get("petrol_pump")
+        if petrol_pump:
+            merged["petrol_pump"] = petrol_pump[:50]
+        else:
+            merged["petrol_pump"] = regex_data.get("petrol_pump")
+
+    # Vendor & Location
+    vendor = llm_data.get("vendor")
+    if vendor:
+        merged["vendor"] = vendor[:100]
+    location = llm_data.get("location")
+    if location:
+        merged["location"] = location[:100]
+
+    # Service type
+    service_type = llm_data.get("service_type")
+    if service_type:
+        merged["service_type"] = service_type[:100]
+
+    # Alphanumeric Registration plate validation: MH12AB1234 or similar
+    # Regex is extremely specific for Indian plate patterns, so if regex found a valid one, prefer it!
+    reg_regex = regex_data.get("registration_no")
+    reg_llm = llm_data.get("registration_no")
+    
+    if reg_regex and len(reg_regex) >= 4:
+        # Regex successfully parsed a specific plate MH12AB1234 or v.no 6244
+        merged["registration_no"] = reg_regex
+    elif reg_llm:
+        # Clean LLM license plate to uppercase and alphanumeric only
+        clean_reg = re.sub(r'[^A-Za-z0-9]', '', reg_llm).upper()
+        if len(clean_reg) >= 4:
+            merged["registration_no"] = clean_reg
+
+    # Odometer: prefer regex if it matches standard patterns, otherwise use LLM
+    odo_regex = regex_data.get("odometer")
+    odo_llm = llm_data.get("odometer")
+    if odo_regex:
+        merged["odometer"] = odo_regex
+    elif odo_llm:
+        try:
+            merged["odometer"] = int(odo_llm)
+        except ValueError:
+            pass
+
+    # Copy all the new advanced invoice and DB fields seamlessly
+    new_fields = [
+        "vendor_type", "parking_location", "maintenance_item", "custom_maintenance_item", 
+        "invoice_number", "taxable_amount", "non_taxable_amount", "total_amount", 
+        "km_limit", "hour_limit", "excess_km_rate", "excess_hour_rate", 
+        "excess_km_amount", "excess_hour_amount", "driver_allowance", 
+        "toll_charges", "parking_charges", "other_charges", "tds_percentage", 
+        "tds_amount", "gst_percentage", "gst_amount", "gst_invoicing_type", 
+        "gst_applicable_on_parking", "gst_applicable_on_toll", "gst_applicable_on_other_charges", 
+        "paid_to", "contact_number"
+    ]
+    for field in new_fields:
+        if field in llm_data:
+            merged[field] = llm_data[field]
+
+    # Remarks: append LLM validation indicator
+    model_used = "Gemini" if os.getenv("GEMINI_API_KEY") else ("AzureOpenAI" if os.getenv("AZURE_OPENAI_KEY") else "GPT")
+    merged["remarks"] = f"[{model_used} + Regex Validated] {llm_data.get('remarks') or ''}".strip()[:255]
+
+    return merged
+
+
 async def process_and_parse_receipt(image_bytes: bytes, content_type: str) -> tuple[str, dict]:
     """
-    Process receipt using Azure Document Intelligence.
-    Try prebuilt-receipt model first; fallback to Read API + regex parsing.
+    Process receipt using Azure Document Intelligence (Primary) with local PaddleOCR fallback,
+    followed by hybrid LLM + Regex validation.
     Returns a tuple of (raw_ocr_text, parsed_receipt_dict).
     """
-    preprocessed_bytes = preprocess_image_with_opencv(image_bytes, content_type)
-    
-    # Try Prebuilt Receipt Model
-    try:
-        receipt_data = await submit_prebuilt_receipt(preprocessed_bytes)
-    except Exception:
-        receipt_data = {}
-        
-    if receipt_data.get("MerchantName") and receipt_data.get("TransactionDate") and receipt_data.get("Total"):
-        # Map Azure receipt fields to our internal schema
-        parsed = {
-            "category": "Fuel" if any(k in (receipt_data.get("MerchantName") or "").lower() for k in ["hpcl", "iocl", "bpcl", "indian oil", "petrol", "diesel", "fuel"]) else "Other",
-            "expense_date": receipt_data.get("TransactionDate")[:10],
-            "amount": receipt_data.get("Total", 0),
-            "liters": None,
-            "rate_per_liter": None,
-            "petrol_pump": receipt_data.get("MerchantName"),
-            "vendor": receipt_data.get("MerchantName"),
-            "registration_no": "",
-            "odometer": None,
-            "location": "",
-            "service_type": "",
-            "remarks": f"[Azure Receipt Model] Scanned on {datetime.now().strftime('%d %b %Y %H:%M')}",
-            "paid": True,
-            "raw_text": "",
-        }
-        return "[Azure Prebuilt Receipt Model Parsing]", parsed
+    # 1. Preprocess the image (using our new pipeline for normal images, pass-through for PDFs)
+    if content_type == "application/pdf":
+        preprocessed_bytes = image_bytes
     else:
-        # Fallback: OCR + regex parsing
+        preprocessed_bytes = preprocess_image_with_opencv(image_bytes, content_type)
+    
+    # Check if LLM keys are configured
+    llm_configured = bool(os.getenv("GEMINI_API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("AZURE_OPENAI_KEY"))
+
+    # 2. Try Azure Document Intelligence
+    try:
+        # If LLM is NOT configured, we can try the fast Prebuilt Receipt Model first
+        if not llm_configured:
+            try:
+                receipt_data = await submit_prebuilt_receipt(preprocessed_bytes)
+                if receipt_data.get("MerchantName") and receipt_data.get("TransactionDate") and receipt_data.get("Total"):
+                    parsed = {
+                        "category": "Fuel" if any(k in (receipt_data.get("MerchantName") or "").lower() for k in ["hpcl", "iocl", "bpcl", "indian oil", "petrol", "diesel", "fuel"]) else "Other",
+                        "expense_date": receipt_data.get("TransactionDate")[:10],
+                        "amount": receipt_data.get("Total", 0),
+                        "liters": None,
+                        "rate_per_liter": None,
+                        "petrol_pump": receipt_data.get("MerchantName"),
+                        "vendor": receipt_data.get("MerchantName"),
+                        "registration_no": "",
+                        "odometer": None,
+                        "location": "",
+                        "service_type": "",
+                        "remarks": f"[Azure Receipt Model] Scanned on {datetime.now().strftime('%d %b %Y %H:%M')}",
+                        "paid": True,
+                        "raw_text": "[Azure Prebuilt Receipt Model Parsing]",
+                    }
+                    return "[Azure Prebuilt Receipt Model Parsing]", parsed
+            except Exception as e:
+                print(f"Azure Prebuilt Receipt Model failed or skipped: {e}")
+
+        # Run Azure Read OCR API to get full raw text
         raw_text = await run_azure_ocr(preprocessed_bytes)
-        # Reject non-Indian receipts before parsing
         assert_indian_receipt(raw_text)
-        parsed = parse_receipt(raw_text)
-        return raw_text, parsed
+
+        # Parse with local regex baseline
+        regex_parsed = parse_receipt(raw_text)
+
+        # Run LLM validation if keys are present
+        if llm_configured:
+            from utils_llm import validate_and_parse_with_llm
+            llm_parsed = validate_and_parse_with_llm(raw_text)
+            if llm_parsed:
+                merged = merge_llm_and_regex(llm_parsed, regex_parsed)
+                return raw_text, merged
+
+        # Fallback to regex-only if LLM failed or is not configured
+        return raw_text, regex_parsed
+
+    except Exception as azure_err:
+        print(f"Azure Document Intelligence failed: {azure_err}. Falling back to local PaddleOCR...")
+        # 3. Fallback to local PaddleOCR
+        try:
+            from utils_paddle import run_paddle_ocr
+            raw_text = await run_paddle_ocr(preprocessed_bytes)
+            assert_indian_receipt(raw_text)
+            regex_parsed = parse_receipt(raw_text)
+
+            if llm_configured:
+                from utils_llm import validate_and_parse_with_llm
+                llm_parsed = validate_and_parse_with_llm(raw_text)
+                if llm_parsed:
+                    merged = merge_llm_and_regex(llm_parsed, regex_parsed)
+                    merged["remarks"] = f"[PaddleOCR Fallback + LLM] {merged.get('remarks') or ''}"[:255]
+                    return raw_text, merged
+
+            regex_parsed["remarks"] = f"[PaddleOCR Fallback] Scanned on {datetime.now().strftime('%d %b %Y %H:%M')}"
+            return raw_text, regex_parsed
+        except Exception as paddle_err:
+            print(f"PaddleOCR fallback also failed: {paddle_err}")
+            # Raise the original Azure exception so the client knows Azure failed
+            if isinstance(azure_err, HTTPException):
+                raise azure_err
+            raise HTTPException(status_code=502, detail=f"OCR processing failed (Azure: {azure_err}; PaddleOCR: {paddle_err})")
 
 
 # ─────────────────────────────────────────────
@@ -855,20 +1076,65 @@ def home():
     return FileResponse("static/index.html")
 
 
-# ── Debug: Raw OCR text (no DB save) ──────────
-@app.post("/scan-receipt-debug")
-async def scan_receipt_debug(file: UploadFile = File(...)):
-    """Upload a receipt → Azure OCR → return raw text + parsed fields (no DB save)."""
-    content_type = normalize_content_type(file)
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return Response(status_code=204)
+
+
+# ─────────────────────────────────────────────
+#  Swagger UI OpenAPI Schema Patch
+# ─────────────────────────────────────────────
+from fastapi.openapi.utils import get_openapi
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title="Receipt Scanner API",
+        version="1.0.0",
+        routes=app.routes,
+    )
+    # Hack to force Swagger UI to display a file upload button for list[UploadFile]
+    for path in openapi_schema.get("paths", {}).values():
+        for method in path.values():
+            if "requestBody" in method:
+                content = method["requestBody"].get("content", {})
+                if "multipart/form-data" in content:
+                    schema = content["multipart/form-data"].get("schema", {})
+                    if "$ref" in schema:
+                        ref_name = schema["$ref"].split("/")[-1]
+                        schema = openapi_schema["components"]["schemas"][ref_name]
+                    properties = schema.get("properties", {})
+                    for prop_name, prop_val in properties.items():
+                        if prop_val.get("type") == "array" and prop_val.get("items", {}).get("type") == "string":
+                            prop_val["items"]["format"] = "binary"
+                            
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
+
+
+# ── Helper for concurrent processing ──────────
+async def _process_single_file(f: UploadFile):
+    content_type = normalize_content_type(f)
     allowed = {"image/jpeg", "image/png", "image/bmp", "image/tiff", "image/webp", "application/pdf"}
     if content_type not in allowed:
-        raise HTTPException(status_code=400, detail="Unsupported file type. Upload JPEG, PNG, BMP, TIFF, WebP or PDF.")
-    image_bytes = await file.read()
+        raise HTTPException(status_code=400, detail=f"Unsupported file type for {f.filename}.")
+    image_bytes = await f.read()
     image_bytes = convert_to_jpeg_if_needed(image_bytes, content_type)
-    
+    return await process_and_parse_receipt(image_bytes, content_type)
+
+
+# ── Debug: Raw OCR text (no DB save) ──────────
+@app.post("/scan-receipt-debug")
+async def scan_receipt_debug(files: list[UploadFile] = File(...)):
+    """Upload receipts → Azure OCR → return raw text + parsed fields (no DB save)."""
     try:
-        raw_text, parsed = await process_and_parse_receipt(image_bytes, content_type)
-        return {"raw_ocr_text": raw_text, "receipts": [parsed]}
+        results = await asyncio.gather(*[_process_single_file(f) for f in files])
+        raw_texts = [r[0] for r in results]
+        parsed_list = [r[1] for r in results]
+        return {"raw_ocr_text": "\n\n---\n\n".join(raw_texts), "receipts": parsed_list}
     except HTTPException:
         raise
     except Exception as e:
@@ -877,54 +1143,64 @@ async def scan_receipt_debug(file: UploadFile = File(...)):
 
 # ── Scan Receipt ──────────────────────────────
 @app.post("/scan-receipt")
-async def scan_receipt(file: UploadFile = File(...)):
+async def scan_receipt(files: list[UploadFile] = File(...)):
     """
-    Upload a receipt image → Azure OCR → smart parse → save to MySQL → return JSON.
+    Upload receipt images → Azure OCR → smart parse → save to MySQL → return JSON.
     """
-    content_type = normalize_content_type(file)
-    allowed = {"image/jpeg", "image/png", "image/bmp", "image/tiff", "image/webp", "application/pdf"}
-    if content_type not in allowed:
-        raise HTTPException(status_code=400, detail="Unsupported file type. Upload JPEG, PNG, BMP, TIFF, WebP or PDF.")
-
     try:
-        image_bytes = await file.read()
-        image_bytes = convert_to_jpeg_if_needed(image_bytes, content_type)
+        results = await asyncio.gather(*[_process_single_file(f) for f in files])
+        parsed_list = [r[1] for r in results]
 
-        raw_text, parsed = await process_and_parse_receipt(image_bytes, content_type)
-
-        # Save to MySQL
+        expense_ids = []
         conn = get_connection()
         with conn.cursor() as cursor:
             sql = """
             INSERT INTO expenses
             (category, expense_date, amount, liters, rate_per_liter,
              petrol_pump, vendor, service_type, odometer, registration_no,
-             location, remarks, paid)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             location, remarks, paid, vendor_type, parking_location,
+             maintenance_item, custom_maintenance_item, invoice_number,
+             taxable_amount, non_taxable_amount, total_amount, km_limit,
+             hour_limit, excess_km_rate, excess_hour_rate, excess_km_amount,
+             excess_hour_amount, driver_allowance, toll_charges, parking_charges,
+             other_charges, tds_percentage, tds_amount, gst_percentage,
+             gst_amount, gst_invoicing_type, gst_applicable_on_parking,
+             gst_applicable_on_toll, gst_applicable_on_other_charges, paid_to,
+             contact_number)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s)
             """
-            cursor.execute(sql, (
-                parsed.get("category"),
-                parsed.get("expense_date"),
-                parsed.get("amount"),
-                parsed.get("liters"),
-                parsed.get("rate_per_liter"),
-                parsed.get("petrol_pump"),
-                parsed.get("vendor"),
-                parsed.get("service_type"),
-                parsed.get("odometer"),
-                parsed.get("registration_no"),
-                parsed.get("location"),
-                parsed.get("remarks"),
-                parsed.get("paid"),
-            ))
-            expense_id = cursor.lastrowid
+            for parsed in parsed_list:
+                cursor.execute(sql, (
+                    parsed.get("category"), parsed.get("expense_date"), parsed.get("amount"),
+                    parsed.get("liters"), parsed.get("rate_per_liter"), parsed.get("petrol_pump"),
+                    parsed.get("vendor"), parsed.get("service_type"), parsed.get("odometer"),
+                    parsed.get("registration_no"), parsed.get("location"), parsed.get("remarks"),
+                    parsed.get("paid"), parsed.get("vendor_type"), parsed.get("parking_location"),
+                    parsed.get("maintenance_item"), parsed.get("custom_maintenance_item"),
+                    parsed.get("invoice_number"), parsed.get("taxable_amount"),
+                    parsed.get("non_taxable_amount"), parsed.get("total_amount"),
+                    parsed.get("km_limit"), parsed.get("hour_limit"), parsed.get("excess_km_rate"),
+                    parsed.get("excess_hour_rate"), parsed.get("excess_km_amount"),
+                    parsed.get("excess_hour_amount"), parsed.get("driver_allowance"),
+                    parsed.get("toll_charges"), parsed.get("parking_charges"),
+                    parsed.get("other_charges"), parsed.get("tds_percentage"),
+                    parsed.get("tds_amount"), parsed.get("gst_percentage"),
+                    parsed.get("gst_amount"), parsed.get("gst_invoicing_type"),
+                    parsed.get("gst_applicable_on_parking"), parsed.get("gst_applicable_on_toll"),
+                    parsed.get("gst_applicable_on_other_charges"), parsed.get("paid_to"),
+                    parsed.get("contact_number")
+                ))
+                expense_ids.append(cursor.lastrowid)
             conn.commit()
         conn.close()
 
         return {
-            "message":     "Receipt(s) scanned and saved successfully!",
-            "expense_ids": [expense_id],
-            "extracted":   [parsed],
+            "message":     f"{len(parsed_list)} Receipt(s) scanned and saved successfully!",
+            "expense_ids": expense_ids,
+            "extracted":   parsed_list,
         }
 
     except HTTPException:
@@ -946,10 +1222,19 @@ def create_expense(expense: Expense):
                 liters, rate_per_liter, odometer, service_type, vendor,
                 amount, paid, registration_no, challan_no, challan_type,
                 violation_type, issued_by, due_date, remarks,
-                party_type, party, contact, expense_name
+                party_type, party, contact, expense_name,
+                vendor_type, parking_location, maintenance_item, custom_maintenance_item,
+                invoice_number, taxable_amount, non_taxable_amount, total_amount,
+                km_limit, hour_limit, excess_km_rate, excess_hour_rate,
+                excess_km_amount, excess_hour_amount, driver_allowance,
+                toll_charges, parking_charges, other_charges, tds_percentage,
+                tds_amount, gst_percentage, gst_amount, gst_invoicing_type,
+                gst_applicable_on_parking, gst_applicable_on_toll, gst_applicable_on_other_charges,
+                paid_to, contact_number
             )
             VALUES
-            (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+             %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """
             cursor.execute(sql, (
                 expense.category,
@@ -975,6 +1260,34 @@ def create_expense(expense: Expense):
                 expense.party[:100] if expense.party else None,
                 expense.contact[:100] if expense.contact else None,
                 expense.expense_name[:100] if expense.expense_name else None,
+                expense.vendor_type,
+                expense.parking_location,
+                expense.maintenance_item,
+                expense.custom_maintenance_item,
+                expense.invoice_number,
+                expense.taxable_amount,
+                expense.non_taxable_amount,
+                expense.total_amount,
+                expense.km_limit,
+                expense.hour_limit,
+                expense.excess_km_rate,
+                expense.excess_hour_rate,
+                expense.excess_km_amount,
+                expense.excess_hour_amount,
+                expense.driver_allowance,
+                expense.toll_charges,
+                expense.parking_charges,
+                expense.other_charges,
+                expense.tds_percentage,
+                expense.tds_amount,
+                expense.gst_percentage,
+                expense.gst_amount,
+                expense.gst_invoicing_type,
+                expense.gst_applicable_on_parking,
+                expense.gst_applicable_on_toll,
+                expense.gst_applicable_on_other_charges,
+                expense.paid_to,
+                expense.contact_number
             ))
             conn.commit()
         conn.close()

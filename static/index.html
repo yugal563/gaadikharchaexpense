@@ -49,8 +49,15 @@
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
     <!-- Babel for browser JSX transpilation -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script>
+        Babel.registerPreset("react-classic", {
+            presets: [
+                [Babel.availablePresets.react, { runtime: "classic" }]
+            ]
+        });
+    </script>
 
     <!-- React App script -->
-    <script type="text/babel" src="/static/app.jsx"></script>
+    <script type="text/babel" data-presets="react-classic" src="/static/app.jsx?v=2"></script>
 </body>
 </html>

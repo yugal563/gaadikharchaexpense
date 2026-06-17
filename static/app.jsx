@@ -11,8 +11,8 @@ function App() {
 
     // ── Receipt Scanner State ──────────────────
     const [leftPanelMode, setLeftPanelMode] = useState("manual"); // 'manual' | 'scanner'
-    const [scanFile, setScanFile] = useState(null);
-    const [scanPreview, setScanPreview] = useState(null);
+    const [scanFiles, setScanFiles] = useState([]);
+    const [scanPreviews, setScanPreviews] = useState([]);
     const [scanLoading, setScanLoading] = useState(false);
     const [scanStep, setScanStep] = useState(""); // status message
     const [scanResult, setScanResult] = useState(null); // parsed result from API
@@ -47,7 +47,34 @@ function App() {
         party_type: "",
         party: "",
         contact: "",
-        expense_name: ""
+        expense_name: "",
+        vendor_type: "",
+        maintenance_item: "",
+        custom_maintenance_item: "",
+        invoice_number: "",
+        taxable_amount: "",
+        non_taxable_amount: "",
+        total_amount: "",
+        km_limit: "",
+        hour_limit: "",
+        excess_km_rate: "",
+        excess_hour_rate: "",
+        excess_km_amount: "",
+        excess_hour_amount: "",
+        driver_allowance: "",
+        toll_charges: "",
+        parking_charges: "",
+        other_charges: "",
+        tds_percentage: "",
+        tds_amount: "",
+        gst_percentage: "",
+        gst_amount: "",
+        gst_invoicing_type: "",
+        gst_applicable_on_parking: false,
+        gst_applicable_on_toll: false,
+        gst_applicable_on_other_charges: false,
+        paid_to: "",
+        contact_number: ""
     };
     const [form, setForm] = useState(initialFormState);
     const [notification, setNotification] = useState(null);
@@ -148,7 +175,7 @@ function App() {
             return;
         }
 
-        const { vehicle_record_type, parking_location, ...formValues } = form;
+        const { vehicle_record_type, ...formValues } = form;
 
         const payload = {
             ...formValues,
@@ -158,7 +185,7 @@ function App() {
             odometer: form.odometer ? parseInt(form.odometer, 10) : null,
             vehicle: form.vehicle || null,
             petrol_pump: isFuel ? form.petrol_pump || null : null,
-            location: isParking ? form.parking_location || null : form.location || null,
+            location: form.location || null,
             service_type: isMaintenance ? form.service_type || null : (isVehicle && !['general', 'challan'].includes(form.vehicle_record_type) ? form.vehicle_record_type : null),
             vendor: isMaintenance ? form.vendor || null : null,
             remarks: form.remarks || form.remark || null,
@@ -168,11 +195,15 @@ function App() {
             violation_type: isVehicleChallan ? form.violation_type || null : null,
             issued_by: isVehicleChallan ? form.issued_by || null : null,
             due_date: isVehicleChallan ? form.due_date || null : null,
-            remarks: isVehicleChallan ? form.remarks || null : null,
             party_type: isVehicleOther || form.category === "Other" ? form.party_type || null : null,
             party: isVehicleOther || form.category === "Other" ? form.party || null : null,
             contact: isVehicleOther || form.category === "Other" ? form.contact || null : null,
-            expense_name: isVehicleOther || form.category === "Other" ? form.expense_name || null : null
+            expense_name: isVehicleOther || form.category === "Other" ? form.expense_name || null : null,
+            
+            // Explicitly map some new fields that need float/int parsing (or rely on Pydantic)
+            taxable_amount: form.taxable_amount ? parseFloat(form.taxable_amount) : null,
+            total_amount: form.total_amount ? parseFloat(form.total_amount) : null,
+            gst_amount: form.gst_amount ? parseFloat(form.gst_amount) : null,
         };
 
         try {
@@ -200,36 +231,45 @@ function App() {
     };
 
     // ── Receipt Scanner Handlers ───────────────
-    const handleFileSelect = (file) => {
-        if (!file || (!file.type.startsWith("image/") && file.type !== "application/pdf")) {
-            showToast("Please select a valid image or PDF file.", "error");
+    const handleFileSelect = (files) => {
+        const validFiles = Array.from(files).filter(f => f.type.startsWith("image/") || f.type === "application/pdf");
+        if (validFiles.length === 0) {
+            showToast("Please select valid image or PDF files.", "error");
             return;
         }
-        setScanFile(file);
+        setScanFiles(validFiles);
         setScanResult(null);
         setScanStep("");
-        const reader = new FileReader();
-        reader.onload = (e) => setScanPreview(e.target.result);
-        reader.readAsDataURL(file);
+        
+        const previews = [];
+        validFiles.forEach((file, index) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                previews[index] = e.target.result;
+                if (previews.filter(Boolean).length === validFiles.length) {
+                    setScanPreviews([...previews]);
+                }
+            };
+            reader.readAsDataURL(file);
+        });
     };
 
     const handleDrop = (e) => {
         e.preventDefault();
         setIsDragOver(false);
-        const file = e.dataTransfer.files[0];
-        handleFileSelect(file);
+        handleFileSelect(e.dataTransfer.files);
     };
 
     const handleScanSubmit = async () => {
-        if (!scanFile) { showToast("Please select a receipt file first.", "error"); return; }
+        if (scanFiles.length === 0) { showToast("Please select at least one receipt file.", "error"); return; }
         setScanLoading(true);
         setScanResult(null);
         try {
-            setScanStep(scanFile?.type === "application/pdf" ? "Uploading PDF to Azure OCR..." : "Uploading image to Azure OCR...");
+            setScanStep("Uploading files to Azure OCR...");
             const formData = new FormData();
-            formData.append("file", scanFile);
+            scanFiles.forEach(file => formData.append("files", file));
 
-            setScanStep("Reading receipt with Azure Computer Vision...");
+            setScanStep("Reading receipts with Azure Computer Vision...");
             const res = await fetch("/scan-receipt", { method: "POST", body: formData });
 
             if (!res.ok) {
@@ -241,7 +281,7 @@ function App() {
             const data = await res.json();
             setScanResult(data);
             setScanStep("Done!");
-            showToast("Receipt scanned & saved successfully! 🎉", "success");
+            showToast(data.message || "Receipts scanned & saved successfully! 🎉", "success");
             fetchExpenses();
         } catch (err) {
             showToast(err.message, "error");
@@ -252,8 +292,8 @@ function App() {
     };
 
     const resetScanner = () => {
-        setScanFile(null);
-        setScanPreview(null);
+        setScanFiles([]);
+        setScanPreviews([]);
         setScanResult(null);
         setScanVerifyData(null);
         setScanStep("");
@@ -263,23 +303,23 @@ function App() {
 
     // ── Scan & Verify (no DB write yet) ───────────
     const handleScanVerify = async () => {
-        if (!scanFile) { showToast("Please select a receipt file first.", "error"); return; }
+        if (scanFiles.length === 0) { showToast("Please select at least one receipt file.", "error"); return; }
         setScanLoading(true);
         setScanResult(null);
         setScanVerifyData(null);
         try {
-            setScanStep(scanFile?.type === "application/pdf" ? "Reading PDF with Azure OCR..." : "Reading receipt with Azure OCR...");
+            setScanStep("Reading receipts with Azure OCR...");
             const formData = new FormData();
-            formData.append("file", scanFile);
+            scanFiles.forEach(file => formData.append("files", file));
             const res = await fetch("/scan-receipt-debug", { method: "POST", body: formData });
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}));
                 throw new Error(err.detail || "Scan failed");
             }
             const data = await res.json();
-            setScanVerifyData({ ...data.parsed });
+            setScanVerifyData(data.receipts || []);
             setScanStep("");
-            showToast("Receipt scanned! Please verify the details below.", "success");
+            showToast("Receipts scanned! Please verify the details below.", "success");
         } catch (err) {
             showToast(err.message, "error");
             setScanStep("");
@@ -290,33 +330,65 @@ function App() {
 
     // ── Confirm & Save after verification ─────────
     const handleConfirmAndSave = async () => {
-        if (!scanVerifyData) return;
+        if (!scanVerifyData || scanVerifyData.length === 0) return;
         try {
-            const payload = {
-                category:        scanVerifyData.category || "Other",
-                expense_date:    scanVerifyData.expense_date,
-                amount:          parseFloat(scanVerifyData.amount) || 0,
-                liters:          scanVerifyData.liters          ? parseFloat(scanVerifyData.liters)          : null,
-                rate_per_liter:  scanVerifyData.rate_per_liter  ? parseFloat(scanVerifyData.rate_per_liter)  : null,
-                odometer:        scanVerifyData.odometer        ? parseInt(scanVerifyData.odometer, 10)      : null,
-                petrol_pump:     scanVerifyData.petrol_pump     || null,
-                vendor:          scanVerifyData.vendor          || null,
-                registration_no: scanVerifyData.registration_no || null,
-                location:        scanVerifyData.location        || null,
-                service_type:    scanVerifyData.service_type    || null,
-                remarks:         scanVerifyData.remarks         || null,
-                paid:            true,
-            };
-            const res = await fetch("/expenses", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload)
-            });
-            if (!res.ok) {
-                const err = await res.json().catch(() => ({}));
-                throw new Error(err.detail || "Failed to save expense");
+            for (const data of scanVerifyData) {
+                const payload = {
+                    category:        data.category || "Other",
+                    expense_date:    data.expense_date,
+                    amount:          parseFloat(data.amount) || 0,
+                    liters:          data.liters          ? parseFloat(data.liters)          : null,
+                    rate_per_liter:  data.rate_per_liter  ? parseFloat(data.rate_per_liter)  : null,
+                    odometer:        data.odometer        ? parseInt(data.odometer, 10)      : null,
+                    petrol_pump:     data.petrol_pump     || null,
+                    vendor:          data.vendor          || null,
+                    registration_no: data.registration_no || null,
+                    location:        data.location        || null,
+                    service_type:    data.service_type    || null,
+                    remarks:         data.remarks         || null,
+                    paid:            true,
+                    
+                    // New DB columns
+                    vendor_type: data.vendor_type || null,
+                    parking_location: data.parking_location || null,
+                    maintenance_item: data.maintenance_item || null,
+                    custom_maintenance_item: data.custom_maintenance_item || null,
+                    invoice_number: data.invoice_number || null,
+                    taxable_amount: data.taxable_amount ? parseFloat(data.taxable_amount) : null,
+                    non_taxable_amount: data.non_taxable_amount ? parseFloat(data.non_taxable_amount) : null,
+                    total_amount: data.total_amount ? parseFloat(data.total_amount) : null,
+                    km_limit: data.km_limit ? parseInt(data.km_limit, 10) : null,
+                    hour_limit: data.hour_limit ? parseInt(data.hour_limit, 10) : null,
+                    excess_km_rate: data.excess_km_rate ? parseFloat(data.excess_km_rate) : null,
+                    excess_hour_rate: data.excess_hour_rate ? parseFloat(data.excess_hour_rate) : null,
+                    excess_km_amount: data.excess_km_amount ? parseFloat(data.excess_km_amount) : null,
+                    excess_hour_amount: data.excess_hour_amount ? parseFloat(data.excess_hour_amount) : null,
+                    driver_allowance: data.driver_allowance ? parseFloat(data.driver_allowance) : null,
+                    toll_charges: data.toll_charges ? parseFloat(data.toll_charges) : null,
+                    parking_charges: data.parking_charges ? parseFloat(data.parking_charges) : null,
+                    other_charges: data.other_charges ? parseFloat(data.other_charges) : null,
+                    tds_percentage: data.tds_percentage ? parseFloat(data.tds_percentage) : null,
+                    tds_amount: data.tds_amount ? parseFloat(data.tds_amount) : null,
+                    gst_percentage: data.gst_percentage ? parseFloat(data.gst_percentage) : null,
+                    gst_amount: data.gst_amount ? parseFloat(data.gst_amount) : null,
+                    gst_invoicing_type: data.gst_invoicing_type || null,
+                    gst_applicable_on_parking: Boolean(data.gst_applicable_on_parking),
+                    gst_applicable_on_toll: Boolean(data.gst_applicable_on_toll),
+                    gst_applicable_on_other_charges: Boolean(data.gst_applicable_on_other_charges),
+                    paid_to: data.paid_to || null,
+                    contact_number: data.contact_number || null,
+                };
+                const res = await fetch("/expenses", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || "Failed to save expense");
+                }
             }
-            showToast("Expense verified & saved successfully! 🎉", "success");
+            showToast("All expenses verified & saved successfully! 🎉", "success");
             resetScanner();
             fetchExpenses();
         } catch (err) {
@@ -502,7 +574,7 @@ function App() {
                                 </div>
 
                                 {/* Drop Zone */}
-                                {!scanPreview ? (
+                                {scanFiles.length === 0 ? (
                                     <div
                                         onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
                                         onDragLeave={() => setIsDragOver(false)}
@@ -520,51 +592,47 @@ function App() {
                                             <i className="fa-solid fa-cloud-arrow-up"></i>
                                         </div>
                                         <div className="text-center">
-                                            <p className="text-sm font-semibold text-slate-300">Drop receipt here</p>
-                                            <p className="text-xs text-slate-500 mt-0.5">or click to browse</p>
+                                            <p className="text-sm font-semibold text-slate-300">Drop receipts here</p>
+                                            <p className="text-xs text-slate-500 mt-0.5">or click to browse multiple files</p>
                                         </div>
                                         <p className="text-[10px] text-slate-600">JPEG · PNG · BMP · TIFF · WebP · PDF</p>
                                         <input
                                             ref={fileInputRef}
                                             type="file"
+                                            multiple
                                             accept="image/*,application/pdf"
                                             className="hidden"
-                                            onChange={(e) => handleFileSelect(e.target.files[0])}
+                                            onChange={(e) => handleFileSelect(e.target.files)}
                                         />
                                     </div>
                                 ) : (
                                     <div className="space-y-3">
-                                        {/* Image/PDF Preview */}
-                                        <div className="relative rounded-xl overflow-hidden border border-slate-700 bg-slate-950 flex items-center justify-center p-4">
-                                            {scanFile?.type === "application/pdf" ? (
-                                                <div className="flex flex-col items-center justify-center py-6 text-slate-400">
-                                                    <i className="fa-solid fa-file-pdf text-5xl text-rose-500 mb-2"></i>
-                                                    <p className="text-xs font-semibold text-slate-300">PDF Document</p>
-                                                    <p className="text-[10px] text-slate-500 mt-1 truncate max-w-[200px]">{scanFile?.name}</p>
+                                        {/* Grid of Previews */}
+                                        <div className="grid grid-cols-2 gap-3 max-h-64 overflow-y-auto pr-1">
+                                            {scanFiles.map((file, idx) => (
+                                                <div key={idx} className="relative rounded-xl overflow-hidden border border-slate-700 bg-slate-950 flex flex-col items-center justify-center p-3 h-32 group">
+                                                    {file.type === "application/pdf" ? (
+                                                        <div className="flex flex-col items-center justify-center text-slate-400">
+                                                            <i className="fa-solid fa-file-pdf text-3xl text-rose-500 mb-2"></i>
+                                                            <p className="text-[10px] text-slate-400 truncate w-[100px] text-center">{file.name}</p>
+                                                        </div>
+                                                    ) : (
+                                                        <img
+                                                            src={scanPreviews[idx]}
+                                                            alt={`Preview ${idx}`}
+                                                            className="w-full h-full object-cover rounded-lg opacity-80 group-hover:opacity-100 transition-opacity"
+                                                        />
+                                                    )}
                                                 </div>
-                                            ) : (
-                                                <img
-                                                    src={scanPreview}
-                                                    alt="Receipt preview"
-                                                    className="w-full object-contain max-h-48"
-                                                />
-                                            )}
-                                            {!scanLoading && !scanResult && (
-                                                <button
-                                                    onClick={resetScanner}
-                                                    className="absolute top-2 right-2 w-7 h-7 bg-slate-900/80 hover:bg-rose-600 text-white rounded-full text-xs flex items-center justify-center transition-colors"
-                                                >
-                                                    <i className="fa-solid fa-xmark"></i>
-                                                </button>
-                                            )}
+                                            ))}
                                         </div>
-
-                                        {/* File info */}
-                                        {!scanResult && (
-                                            <div className="flex items-center gap-2 px-3 py-2 bg-slate-800/60 rounded-xl">
-                                                <i className={`fa-solid ${scanFile?.type === "application/pdf" ? "fa-file-pdf text-rose-500" : "fa-file-image text-violet-400"} text-sm`}></i>
-                                                <span className="text-xs text-slate-300 flex-1 truncate">{scanFile?.name}</span>
-                                                <span className="text-[10px] text-slate-500">{scanFile ? (scanFile.size / 1024).toFixed(0) + ' KB' : ''}</span>
+                                        
+                                        {!scanLoading && !scanResult && (
+                                            <div className="flex justify-between items-center px-1">
+                                                <span className="text-xs text-slate-400 font-medium">{scanFiles.length} file(s) ready</span>
+                                                <button onClick={resetScanner} className="text-xs text-rose-400 hover:text-rose-300 font-medium px-3 py-1 rounded bg-rose-500/10">
+                                                    Clear All
+                                                </button>
                                             </div>
                                         )}
                                     </div>
@@ -578,15 +646,15 @@ function App() {
                                                 <i className="fa-solid fa-circle-notch fa-spin text-violet-400"></i>
                                             </div>
                                             <div>
-                                                <p className="text-xs font-bold text-violet-300">Processing Receipt</p>
+                                                <p className="text-xs font-bold text-violet-300">Processing {scanFiles.length} Receipt{scanFiles.length > 1 ? 's' : ''}</p>
                                                 <p className="text-[11px] text-slate-400 mt-0.5">{scanStep}</p>
                                             </div>
                                         </div>
                                         {/* Animated pipeline steps */}
                                         <div className="space-y-1.5 pl-2">
                                             {[
-                                                { label: scanFile?.type === "application/pdf" ? "Upload PDF" : "Upload Image", icon: "fa-cloud-arrow-up" },
-                                                { label: "Azure OCR – Extract Text", icon: "fa-eye" },
+                                                { label: "Upload Files", icon: "fa-cloud-arrow-up" },
+                                                { label: "Azure OCR – Concurrently Extract Text", icon: "fa-eye" },
                                                 { label: "Categorise & Parse Fields", icon: "fa-tags" },
                                                 { label: "Save to MySQL Database", icon: "fa-database" },
                                             ].map((step, i) => (
@@ -642,7 +710,7 @@ function App() {
                                 )}
 
                                 {/* Scan Buttons — shown when image selected but not yet saved */}
-                                {scanFile && !scanResult && !scanVerifyData && (
+                                {scanFiles.length > 0 && !scanResult && !scanVerifyData && (
                                     <div className="grid grid-cols-2 gap-2">
                                         {/* Auto-Save */}
                                         <button
@@ -674,138 +742,165 @@ function App() {
                                 )}
 
                                 {/* ── Verification / Edit Form ─────────────── */}
-                                {scanVerifyData && (
-                                    <div className="bg-amber-950/20 border border-amber-700/30 rounded-xl p-4 space-y-3">
-                                        <div className="flex items-center justify-between mb-1">
-                                            <p className="text-xs font-bold text-amber-400 flex items-center gap-2">
+                                {scanVerifyData && scanVerifyData.length > 0 && (
+                                    <div className="bg-amber-950/10 rounded-xl space-y-4">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <p className="text-sm font-bold text-amber-400 flex items-center gap-2">
                                                 <i className="fa-solid fa-pen-to-square"></i>
-                                                Verify Extracted Details
+                                                Verify {scanVerifyData.length} Extracted Receipt{scanVerifyData.length > 1 ? 's' : ''}
                                             </p>
-                                            <button onClick={resetScanner} className="text-[10px] text-slate-400 hover:text-white underline">Cancel</button>
+                                            <button onClick={resetScanner} className="text-[10px] text-slate-400 hover:text-white underline">Cancel All</button>
                                         </div>
 
-                                        {/* Editable fields grid */}
-                                        <div className="space-y-2 text-xs">
+                                        <div className="space-y-4 max-h-[600px] overflow-y-auto pr-1">
+                                            {scanVerifyData.map((data, index) => (
+                                                <div key={index} className="bg-amber-950/30 border border-amber-700/30 rounded-xl p-4 space-y-3 relative">
+                                                    <div className="absolute -top-2 -left-2 w-6 h-6 rounded-full bg-amber-600 text-white flex items-center justify-center text-xs font-bold shadow-lg border border-slate-950">
+                                                        {index + 1}
+                                                    </div>
 
-                                            {/* Category + Date */}
-                                            <div className="grid grid-cols-2 gap-2">
-                                                <div>
-                                                    <label className="text-[10px] text-slate-500 uppercase tracking-wider">Category</label>
-                                                    <select
-                                                        value={scanVerifyData.category || "Other"}
-                                                        onChange={e => setScanVerifyData(p => ({ ...p, category: e.target.value }))}
-                                                        className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500"
-                                                    >
-                                                        <option>Fuel</option>
-                                                        <option>Maintenance</option>
-                                                        <option>Vehicle</option>
-                                                        <option>Other</option>
-                                                    </select>
-                                                </div>
-                                                <div>
-                                                    <label className="text-[10px] text-slate-500 uppercase tracking-wider">Date</label>
-                                                    <input type="date" value={scanVerifyData.expense_date || ""}
-                                                        onChange={e => setScanVerifyData(p => ({ ...p, expense_date: e.target.value }))}
-                                                        className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
-                                                </div>
-                                            </div>
+                                                    {/* Editable fields grid */}
+                                                    <div className="space-y-2 text-xs">
+                                                        {/* Category + Date */}
+                                                        <div className="grid grid-cols-2 gap-2">
+                                                            <div>
+                                                                <label className="text-[10px] text-slate-500 uppercase tracking-wider">Category</label>
+                                                                <select
+                                                                    value={data.category || "Other"}
+                                                                    onChange={e => setScanVerifyData(p => { const n = [...p]; n[index] = { ...n[index], category: e.target.value }; return n; })}
+                                                                    className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500"
+                                                                >
+                                                                    <option>Fuel</option>
+                                                                    <option>Maintenance</option>
+                                                                    <option>Vehicle</option>
+                                                                    <option>Other</option>
+                                                                </select>
+                                                            </div>
+                                                            <div>
+                                                                <label className="text-[10px] text-slate-500 uppercase tracking-wider">Date</label>
+                                                                <input type="date" value={data.expense_date || ""}
+                                                                    onChange={e => setScanVerifyData(p => { const n = [...p]; n[index] = { ...n[index], expense_date: e.target.value }; return n; })}
+                                                                    className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
+                                                            </div>
+                                                        </div>
 
-                                            {/* Amount */}
-                                            <div>
-                                                <label className="text-[10px] text-slate-500 uppercase tracking-wider">Amount (₹)</label>
-                                                <input type="number" step="0.01" value={scanVerifyData.amount || ""}
-                                                    onChange={e => setScanVerifyData(p => ({ ...p, amount: e.target.value }))}
-                                                    className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
-                                            </div>
+                                                        {/* Amount */}
+                                                        <div>
+                                                            <label className="text-[10px] text-slate-500 uppercase tracking-wider">Total Amount (₹)</label>
+                                                            <input type="number" step="0.01" value={data.amount || ""}
+                                                                onChange={e => setScanVerifyData(p => { const n = [...p]; n[index] = { ...n[index], amount: e.target.value }; return n; })}
+                                                                className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
+                                                        </div>
 
-                                            {/* Vendor / Petrol Pump */}
-                                            <div className="grid grid-cols-2 gap-2">
-                                                <div>
-                                                    <label className="text-[10px] text-slate-500 uppercase tracking-wider">Vendor / Workshop</label>
-                                                    <input type="text" value={scanVerifyData.vendor || ""}
-                                                        onChange={e => setScanVerifyData(p => ({ ...p, vendor: e.target.value }))}
-                                                        placeholder="—"
-                                                        className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
-                                                </div>
-                                                <div>
-                                                    <label className="text-[10px] text-slate-500 uppercase tracking-wider">Petrol Pump</label>
-                                                    <input type="text" value={scanVerifyData.petrol_pump || ""}
-                                                        onChange={e => setScanVerifyData(p => ({ ...p, petrol_pump: e.target.value }))}
-                                                        placeholder="—"
-                                                        className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
-                                                </div>
-                                            </div>
+                                                        {/* Invoice & GST */}
+                                                        <div className="grid grid-cols-2 gap-2">
+                                                            <div>
+                                                                <label className="text-[10px] text-slate-500 uppercase tracking-wider">Invoice No.</label>
+                                                                <input type="text" value={data.invoice_number || ""}
+                                                                    onChange={e => setScanVerifyData(p => { const n = [...p]; n[index] = { ...n[index], invoice_number: e.target.value }; return n; })}
+                                                                    placeholder="—"
+                                                                    className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
+                                                            </div>
+                                                            <div>
+                                                                <label className="text-[10px] text-slate-500 uppercase tracking-wider">GST Amount (₹)</label>
+                                                                <input type="number" step="0.01" value={data.gst_amount || ""}
+                                                                    onChange={e => setScanVerifyData(p => { const n = [...p]; n[index] = { ...n[index], gst_amount: e.target.value }; return n; })}
+                                                                    placeholder="—"
+                                                                    className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
+                                                            </div>
+                                                        </div>
 
-                                            {/* Reg No + Odometer */}
-                                            <div className="grid grid-cols-2 gap-2">
-                                                <div>
-                                                    <label className="text-[10px] text-slate-500 uppercase tracking-wider">Reg. No.</label>
-                                                    <input type="text" value={scanVerifyData.registration_no || ""}
-                                                        onChange={e => setScanVerifyData(p => ({ ...p, registration_no: e.target.value }))}
-                                                        placeholder="—"
-                                                        className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
-                                                </div>
-                                                <div>
-                                                    <label className="text-[10px] text-slate-500 uppercase tracking-wider">Odometer (km)</label>
-                                                    <input type="number" value={scanVerifyData.odometer || ""}
-                                                        onChange={e => setScanVerifyData(p => ({ ...p, odometer: e.target.value }))}
-                                                        placeholder="—"
-                                                        className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
-                                                </div>
-                                            </div>
+                                                        {/* Vendor / Petrol Pump */}
+                                                        <div className="grid grid-cols-2 gap-2">
+                                                            <div>
+                                                                <label className="text-[10px] text-slate-500 uppercase tracking-wider">Vendor / Workshop</label>
+                                                                <input type="text" value={data.vendor || ""}
+                                                                    onChange={e => setScanVerifyData(p => { const n = [...p]; n[index] = { ...n[index], vendor: e.target.value }; return n; })}
+                                                                    placeholder="—"
+                                                                    className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
+                                                            </div>
+                                                            <div>
+                                                                <label className="text-[10px] text-slate-500 uppercase tracking-wider">Petrol Pump</label>
+                                                                <input type="text" value={data.petrol_pump || ""}
+                                                                    onChange={e => setScanVerifyData(p => { const n = [...p]; n[index] = { ...n[index], petrol_pump: e.target.value }; return n; })}
+                                                                    placeholder="—"
+                                                                    className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
+                                                            </div>
+                                                        </div>
 
-                                            {/* Liters + Rate */}
-                                            <div className="grid grid-cols-2 gap-2">
-                                                <div>
-                                                    <label className="text-[10px] text-slate-500 uppercase tracking-wider">Liters</label>
-                                                    <input type="number" step="0.01" value={scanVerifyData.liters || ""}
-                                                        onChange={e => setScanVerifyData(p => ({ ...p, liters: e.target.value }))}
-                                                        placeholder="—"
-                                                        className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
-                                                </div>
-                                                <div>
-                                                    <label className="text-[10px] text-slate-500 uppercase tracking-wider">Rate/L (₹)</label>
-                                                    <input type="number" step="0.01" value={scanVerifyData.rate_per_liter || ""}
-                                                        onChange={e => setScanVerifyData(p => ({ ...p, rate_per_liter: e.target.value }))}
-                                                        placeholder="—"
-                                                        className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
-                                                </div>
-                                            </div>
+                                                        {/* Reg No + Odometer */}
+                                                        <div className="grid grid-cols-2 gap-2">
+                                                            <div>
+                                                                <label className="text-[10px] text-slate-500 uppercase tracking-wider">Reg. No.</label>
+                                                                <input type="text" value={data.registration_no || ""}
+                                                                    onChange={e => setScanVerifyData(p => { const n = [...p]; n[index] = { ...n[index], registration_no: e.target.value }; return n; })}
+                                                                    placeholder="—"
+                                                                    className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
+                                                            </div>
+                                                            <div>
+                                                                <label className="text-[10px] text-slate-500 uppercase tracking-wider">Odometer (km)</label>
+                                                                <input type="number" value={data.odometer || ""}
+                                                                    onChange={e => setScanVerifyData(p => { const n = [...p]; n[index] = { ...n[index], odometer: e.target.value }; return n; })}
+                                                                    placeholder="—"
+                                                                    className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
+                                                            </div>
+                                                        </div>
 
-                                            {/* Location + Service Type */}
-                                            <div className="grid grid-cols-2 gap-2">
-                                                <div>
-                                                    <label className="text-[10px] text-slate-500 uppercase tracking-wider">Location</label>
-                                                    <input type="text" value={scanVerifyData.location || ""}
-                                                        onChange={e => setScanVerifyData(p => ({ ...p, location: e.target.value }))}
-                                                        placeholder="—"
-                                                        className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
-                                                </div>
-                                                <div>
-                                                    <label className="text-[10px] text-slate-500 uppercase tracking-wider">Service Type</label>
-                                                    <input type="text" value={scanVerifyData.service_type || ""}
-                                                        onChange={e => setScanVerifyData(p => ({ ...p, service_type: e.target.value }))}
-                                                        placeholder="—"
-                                                        className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
-                                                </div>
-                                            </div>
+                                                        {/* Liters + Rate */}
+                                                        <div className="grid grid-cols-2 gap-2">
+                                                            <div>
+                                                                <label className="text-[10px] text-slate-500 uppercase tracking-wider">Liters</label>
+                                                                <input type="number" step="0.01" value={data.liters || ""}
+                                                                    onChange={e => setScanVerifyData(p => { const n = [...p]; n[index] = { ...n[index], liters: e.target.value }; return n; })}
+                                                                    placeholder="—"
+                                                                    className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
+                                                            </div>
+                                                            <div>
+                                                                <label className="text-[10px] text-slate-500 uppercase tracking-wider">Rate/L (₹)</label>
+                                                                <input type="number" step="0.01" value={data.rate_per_liter || ""}
+                                                                    onChange={e => setScanVerifyData(p => { const n = [...p]; n[index] = { ...n[index], rate_per_liter: e.target.value }; return n; })}
+                                                                    placeholder="—"
+                                                                    className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
+                                                            </div>
+                                                        </div>
 
-                                            {/* Remarks */}
-                                            <div>
-                                                <label className="text-[10px] text-slate-500 uppercase tracking-wider">Remarks</label>
-                                                <input type="text" value={scanVerifyData.remarks || ""}
-                                                    onChange={e => setScanVerifyData(p => ({ ...p, remarks: e.target.value }))}
-                                                    className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
-                                            </div>
+                                                        {/* Location + Service Type */}
+                                                        <div className="grid grid-cols-2 gap-2">
+                                                            <div>
+                                                                <label className="text-[10px] text-slate-500 uppercase tracking-wider">Location</label>
+                                                                <input type="text" value={data.location || ""}
+                                                                    onChange={e => setScanVerifyData(p => { const n = [...p]; n[index] = { ...n[index], location: e.target.value }; return n; })}
+                                                                    placeholder="—"
+                                                                    className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
+                                                            </div>
+                                                            <div>
+                                                                <label className="text-[10px] text-slate-500 uppercase tracking-wider">Service Type</label>
+                                                                <input type="text" value={data.service_type || ""}
+                                                                    onChange={e => setScanVerifyData(p => { const n = [...p]; n[index] = { ...n[index], service_type: e.target.value }; return n; })}
+                                                                    placeholder="—"
+                                                                    className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Remarks */}
+                                                        <div>
+                                                            <label className="text-[10px] text-slate-500 uppercase tracking-wider">Remarks</label>
+                                                            <input type="text" value={data.remarks || ""}
+                                                                onChange={e => setScanVerifyData(p => { const n = [...p]; n[index] = { ...n[index], remarks: e.target.value }; return n; })}
+                                                                className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500" />
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))}
                                         </div>
 
-                                        {/* Confirm & Save */}
+                                        {/* Confirm & Save All */}
                                         <button
                                             onClick={handleConfirmAndSave}
                                             id="confirm-save-btn"
-                                            className="w-full py-2.5 flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold rounded-xl shadow-lg transition-all duration-300 text-xs mt-1"
+                                            className="w-full py-2.5 flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold rounded-xl shadow-lg transition-all duration-300 text-xs mt-2"
                                         >
-                                            <i className="fa-solid fa-circle-check"></i> Confirm & Save
+                                            <i className="fa-solid fa-circle-check"></i> Confirm & Save All {scanVerifyData.length}
                                         </button>
                                     </div>
                                 )}

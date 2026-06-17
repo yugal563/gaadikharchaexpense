@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 .system_generated/
 *.log
+
+weights/
+test_swagger.py

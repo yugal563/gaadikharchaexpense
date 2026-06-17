@@ -32,8 +32,8 @@ async def submit_prebuilt_receipt(image_bytes: bytes) -> dict:
         operation_url = response.headers.get("Operation-Location")
         if not operation_url:
             raise HTTPException(status_code=502, detail="Azure did not return an Operation-Location header.")
-        for _ in range(20):
-            await asyncio.sleep(1)
+        for _ in range(40):
+            await asyncio.sleep(0.5)
             poll = await client.get(operation_url, headers=poll_headers)
             result = poll.json()
             status = result.get("status", "")
