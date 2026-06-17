@@ -16,7 +16,6 @@ from dotenv import load_dotenv
 import cv2
 import numpy as np
 from utils_azure import submit_prebuilt_receipt
-from utils_azure_openai import analyze_receipt_with_azure_openai
 
 load_dotenv()
 
@@ -804,6 +803,51 @@ def parse_receipt(text: str) -> dict:
 
 
 # ─────────────────────────────────────────────
+#  Document Intelligence Parser Helper
+# ─────────────────────────────────────────────
+async def process_and_parse_receipt(image_bytes: bytes, content_type: str) -> tuple[str, dict]:
+    """
+    Process receipt using Azure Document Intelligence.
+    Try prebuilt-receipt model first; fallback to Read API + regex parsing.
+    Returns a tuple of (raw_ocr_text, parsed_receipt_dict).
+    """
+    preprocessed_bytes = preprocess_image_with_opencv(image_bytes, content_type)
+    
+    # Try Prebuilt Receipt Model
+    try:
+        receipt_data = await submit_prebuilt_receipt(preprocessed_bytes)
+    except Exception:
+        receipt_data = {}
+        
+    if receipt_data.get("MerchantName") and receipt_data.get("TransactionDate") and receipt_data.get("Total"):
+        # Map Azure receipt fields to our internal schema
+        parsed = {
+            "category": "Fuel" if any(k in (receipt_data.get("MerchantName") or "").lower() for k in ["hpcl", "iocl", "bpcl", "indian oil", "petrol", "diesel", "fuel"]) else "Other",
+            "expense_date": receipt_data.get("TransactionDate")[:10],
+            "amount": receipt_data.get("Total", 0),
+            "liters": None,
+            "rate_per_liter": None,
+            "petrol_pump": receipt_data.get("MerchantName"),
+            "vendor": receipt_data.get("MerchantName"),
+            "registration_no": "",
+            "odometer": None,
+            "location": "",
+            "service_type": "",
+            "remarks": f"[Azure Receipt Model] Scanned on {datetime.now().strftime('%d %b %Y %H:%M')}",
+            "paid": True,
+            "raw_text": "",
+        }
+        return "[Azure Prebuilt Receipt Model Parsing]", parsed
+    else:
+        # Fallback: OCR + regex parsing
+        raw_text = await run_azure_ocr(preprocessed_bytes)
+        # Reject non-Indian receipts before parsing
+        assert_indian_receipt(raw_text)
+        parsed = parse_receipt(raw_text)
+        return raw_text, parsed
+
+
+# ─────────────────────────────────────────────
 #  Routes
 # ─────────────────────────────────────────────
 @app.get("/")
@@ -823,40 +867,12 @@ async def scan_receipt_debug(file: UploadFile = File(...)):
     image_bytes = convert_to_jpeg_if_needed(image_bytes, content_type)
     
     try:
-        parsed_data = await analyze_receipt_with_azure_openai(image_bytes)
-        receipts = parsed_data.get("receipts", [])
-        indian_receipts = [r for r in receipts if r.get("is_indian_receipt") is True]
-        if not indian_receipts:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "This receipt does not appear to be from India. "
-                    "Only Indian receipts (with ₹ / Rs / GST / Indian brands) are supported. "
-                    "Please upload a valid Indian fuel, maintenance, or service receipt."
-                )
-            )
-        for r in indian_receipts:
-            r.pop("confidence", None)
-            r.pop("is_indian_receipt", None)
-        return {"raw_ocr_text": "[Azure OpenAI Vision Model Parsing]", "receipts": indian_receipts}
-
-    except HTTPException as he:
-        if he.status_code == 422:
-            raise
-        import traceback
-        traceback.print_exc()
-        preprocessed_bytes = preprocess_image_with_opencv(image_bytes, content_type)
-        raw_text = await run_azure_ocr(preprocessed_bytes)
-        parsed = parse_receipt(raw_text)
+        raw_text, parsed = await process_and_parse_receipt(image_bytes, content_type)
         return {"raw_ocr_text": raw_text, "receipts": [parsed]}
+    except HTTPException:
+        raise
     except Exception as e:
-        # Fallback to existing OCR + regex parsing
-        import traceback
-        traceback.print_exc()
-        preprocessed_bytes = preprocess_image_with_opencv(image_bytes, content_type)
-        raw_text = await run_azure_ocr(preprocessed_bytes)
-        parsed = parse_receipt(raw_text)
-        return {"raw_ocr_text": raw_text, "receipts": [parsed]}
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ── Scan Receipt ──────────────────────────────
@@ -872,141 +888,43 @@ async def scan_receipt(file: UploadFile = File(...)):
 
     try:
         image_bytes = await file.read()
-
-        # Convert WebP / unsupported formats → JPEG before sending to Azure
         image_bytes = convert_to_jpeg_if_needed(image_bytes, content_type)
 
-        # Step 1: Try Azure OpenAI Vision Model
-        try:
-            parsed_data = await analyze_receipt_with_azure_openai(image_bytes)
-            receipts = parsed_data.get("receipts", [])
-            indian_receipts = [r for r in receipts if r.get("is_indian_receipt") is True]
-            if not indian_receipts:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        "This receipt does not appear to be from India. "
-                        "Only Indian receipts (with ₹ / Rs / GST / Indian brands) are supported. "
-                        "Please upload a valid Indian fuel, maintenance, or service receipt."
-                    )
-                )
-            
-            for idx, r in enumerate(indian_receipts):
-                r["remarks"] = f"[Azure OpenAI] Scanned on {datetime.now().strftime('%d %b %Y %H:%M')}"
-                if len(indian_receipts) > 1:
-                    r["remarks"] += f" (Receipt {idx+1}/{len(indian_receipts)})"
-                r["paid"] = r.get("paid", True)
-                r["raw_text"] = r.get("raw_text", "")
-                r.pop("confidence", None)
-                r.pop("is_indian_receipt", None)
-                
-            parsed_receipts = indian_receipts
+        raw_text, parsed = await process_and_parse_receipt(image_bytes, content_type)
 
-        except HTTPException as he:
-            if he.status_code == 422:
-                raise
-            import traceback
-            traceback.print_exc()
-            preprocessed_bytes = preprocess_image_with_opencv(image_bytes, content_type)
-            try:
-                receipt_data = await submit_prebuilt_receipt(preprocessed_bytes)
-            except Exception:
-                receipt_data = {}
-            if receipt_data.get("MerchantName") and receipt_data.get("TransactionDate") and receipt_data.get("Total"):
-                # Map Azure receipt fields to our internal schema
-                parsed = {
-                    "category": "Fuel" if any(k in (receipt_data.get("MerchantName") or "").lower() for k in ["hpcl", "iocl", "bpcl", "indian oil", "petrol", "diesel", "fuel"]) else "Other",
-                    "expense_date": receipt_data.get("TransactionDate")[:10],
-                    "amount": receipt_data.get("Total", 0),
-                    "liters": None,
-                    "rate_per_liter": None,
-                    "petrol_pump": receipt_data.get("MerchantName"),
-                    "vendor": receipt_data.get("MerchantName"),
-                    "registration_no": "",
-                    "odometer": None,
-                    "location": "",
-                    "service_type": "",
-                    "remarks": f"[Azure Receipt Model] Scanned on {datetime.now().strftime('%d %b %Y %H:%M')}",
-                    "paid": True,
-                    "raw_text": "",
-                }
-            else:
-                # Fallback 2: Fallback to OCR + regex parsing using Azure Document Intelligence Read API
-                raw_text = await run_azure_ocr(preprocessed_bytes)
-                # Reject non-Indian receipts before parsing or saving
-                assert_indian_receipt(raw_text)
-                parsed = parse_receipt(raw_text)
-            parsed_receipts = [parsed]
-        except Exception as e:
-            # Fallback 1: Attempt Azure prebuilt-receipt model
-            import traceback
-            traceback.print_exc()
-            preprocessed_bytes = preprocess_image_with_opencv(image_bytes, content_type)
-            try:
-                receipt_data = await submit_prebuilt_receipt(preprocessed_bytes)
-            except Exception:
-                receipt_data = {}
-            if receipt_data.get("MerchantName") and receipt_data.get("TransactionDate") and receipt_data.get("Total"):
-                # Map Azure receipt fields to our internal schema
-                parsed = {
-                    "category": "Fuel" if any(k in (receipt_data.get("MerchantName") or "").lower() for k in ["hpcl", "iocl", "bpcl", "indian oil", "petrol", "diesel", "fuel"]) else "Other",
-                    "expense_date": receipt_data.get("TransactionDate")[:10],
-                    "amount": receipt_data.get("Total", 0),
-                    "liters": None,
-                    "rate_per_liter": None,
-                    "petrol_pump": receipt_data.get("MerchantName"),
-                    "vendor": receipt_data.get("MerchantName"),
-                    "registration_no": "",
-                    "odometer": None,
-                    "location": "",
-                    "service_type": "",
-                    "remarks": f"[Azure Receipt Model] Scanned on {datetime.now().strftime('%d %b %Y %H:%M')}",
-                    "paid": True,
-                    "raw_text": "",
-                }
-            else:
-                # Fallback 2: Fallback to OCR + regex parsing using Azure Document Intelligence Read API
-                raw_text = await run_azure_ocr(preprocessed_bytes)
-                # Reject non-Indian receipts before parsing or saving
-                assert_indian_receipt(raw_text)
-                parsed = parse_receipt(raw_text)
-            parsed_receipts = [parsed]
-
-        # Step 3: Save to MySQL
-        expense_ids = []
+        # Save to MySQL
         conn = get_connection()
         with conn.cursor() as cursor:
-            for parsed in parsed_receipts:
-                sql = """
-                INSERT INTO expenses
-                (category, expense_date, amount, liters, rate_per_liter,
-                 petrol_pump, vendor, service_type, odometer, registration_no,
-                 location, remarks, paid)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """
-                cursor.execute(sql, (
-                    parsed.get("category"),
-                    parsed.get("expense_date"),
-                    parsed.get("amount"),
-                    parsed.get("liters"),
-                    parsed.get("rate_per_liter"),
-                    parsed.get("petrol_pump"),
-                    parsed.get("vendor"),
-                    parsed.get("service_type"),
-                    parsed.get("odometer"),
-                    parsed.get("registration_no"),
-                    parsed.get("location"),
-                    parsed.get("remarks"),
-                    parsed.get("paid"),
-                ))
-                expense_ids.append(cursor.lastrowid)
+            sql = """
+            INSERT INTO expenses
+            (category, expense_date, amount, liters, rate_per_liter,
+             petrol_pump, vendor, service_type, odometer, registration_no,
+             location, remarks, paid)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
+            cursor.execute(sql, (
+                parsed.get("category"),
+                parsed.get("expense_date"),
+                parsed.get("amount"),
+                parsed.get("liters"),
+                parsed.get("rate_per_liter"),
+                parsed.get("petrol_pump"),
+                parsed.get("vendor"),
+                parsed.get("service_type"),
+                parsed.get("odometer"),
+                parsed.get("registration_no"),
+                parsed.get("location"),
+                parsed.get("remarks"),
+                parsed.get("paid"),
+            ))
+            expense_id = cursor.lastrowid
             conn.commit()
         conn.close()
 
         return {
             "message":     "Receipt(s) scanned and saved successfully!",
-            "expense_ids": expense_ids,
-            "extracted":   parsed_receipts,
+            "expense_ids": [expense_id],
+            "extracted":   [parsed],
         }
 
     except HTTPException:
