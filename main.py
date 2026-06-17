@@ -16,7 +16,6 @@ from dotenv import load_dotenv
 import cv2
 import numpy as np
 from utils_azure import submit_prebuilt_receipt
-from utils_paddle import run_paddle_ocr
 from utils_azure_openai import analyze_receipt_with_azure_openai
 
 load_dotenv()
@@ -932,17 +931,11 @@ async def scan_receipt(file: UploadFile = File(...)):
                     "raw_text": "",
                 }
             else:
-                # Fallback 2: Fallback to OCR + regex parsing
-                # Try PaddleOCR for handwritten receipts first
-                try:
-                    raw_text = await run_paddle_ocr(preprocessed_bytes)
-                except Exception:
-                    # Fallback to Azure OCR if PaddleOCR fails
-                    raw_text = await run_azure_ocr(preprocessed_bytes)
+                # Fallback 2: Fallback to OCR + regex parsing using Azure Document Intelligence Read API
+                raw_text = await run_azure_ocr(preprocessed_bytes)
                 # Reject non-Indian receipts before parsing or saving
                 assert_indian_receipt(raw_text)
                 parsed = parse_receipt(raw_text)
-                
             parsed_receipts = [parsed]
         except Exception as e:
             # Fallback 1: Attempt Azure prebuilt-receipt model
@@ -972,17 +965,11 @@ async def scan_receipt(file: UploadFile = File(...)):
                     "raw_text": "",
                 }
             else:
-                # Fallback 2: Fallback to OCR + regex parsing
-                # Try PaddleOCR for handwritten receipts first
-                try:
-                    raw_text = await run_paddle_ocr(preprocessed_bytes)
-                except Exception:
-                    # Fallback to Azure OCR if PaddleOCR fails
-                    raw_text = await run_azure_ocr(preprocessed_bytes)
+                # Fallback 2: Fallback to OCR + regex parsing using Azure Document Intelligence Read API
+                raw_text = await run_azure_ocr(preprocessed_bytes)
                 # Reject non-Indian receipts before parsing or saving
                 assert_indian_receipt(raw_text)
                 parsed = parse_receipt(raw_text)
-                
             parsed_receipts = [parsed]
 
         # Step 3: Save to MySQL
