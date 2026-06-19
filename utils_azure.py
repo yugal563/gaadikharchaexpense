@@ -190,11 +190,14 @@ async def process_azure_document_intelligence(image_bytes: bytes, content_type: 
             from main import parse_receipt
             regex_parsed = parse_receipt(raw_text) if raw_text else {}
             
-            # Fast-path check: do we have all critical fields?
+            # Fast-path check: do we have all critical fields with high confidence?
             if (
                 regex_parsed.get("vendor") 
                 and regex_parsed.get("expense_date") 
                 and regex_parsed.get("amount")
+                and regex_parsed.get("amount_confidence") == "high"
+                and regex_parsed.get("vendor_confidence") == "high"
+                and regex_parsed.get("date_confidence") == "high"
             ):
                 # Core fields exist, cancel standard models to return early
                 receipt_task.cancel()

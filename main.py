@@ -480,11 +480,13 @@ def parse_receipt(text: str) -> dict:
         return results
 
     amount = 0.0
+    amount_confidence = "low"
 
     # Tier 0: "Rupees: One Lakh Thirty Five Thousand..." — most reliable on formal invoices
     word_amount = _rupee_words_to_amount(text)
     if word_amount and word_amount >= 10:
         amount = word_amount
+        amount_confidence = "high"
 
     # Tier 1: definitive "final amount" labels — allow optional (parenthetical) between label and number
     if not amount:
@@ -498,6 +500,7 @@ def parse_receipt(text: str) -> dict:
         )
         if tier1:
             amount = tier1[-1]
+            amount_confidence = "high"
 
     # Tier 2: fuel pump receipts use "sale" / "preset"; service bills use "total" / "bill amount"
     if not amount:
@@ -521,6 +524,7 @@ def parse_receipt(text: str) -> dict:
         tier2 = [v for v in tier2 if v <= 10_000_000]
         if tier2:
             amount = max(tier2)
+            amount_confidence = "high"
 
     # Tier 2.5: Multi-line TOTAL scanner — handles handwritten receipts where the
     # total label and value appear on separate lines (e.g. "TOTAL\nThank you!\n3343")
@@ -540,6 +544,7 @@ def parse_receipt(text: str) -> dict:
                             v = float(raw_n.replace(',', ''))
                             if 10 <= v <= 9_999_999:
                                 amount = v
+                                amount_confidence = "high"
                                 break
                         except ValueError:
                             pass
@@ -555,6 +560,7 @@ def parse_receipt(text: str) -> dict:
         plausible = [v for v in rs_amounts if 10 <= v <= 9_999_999]
         if plausible:
             amount = max(plausible)
+            amount_confidence = "high"
 
     # Tier 3b: bare Indian-format numbers as absolute last resort (can misfire on bill/txn nos.)
     if not amount:
@@ -625,18 +631,24 @@ def parse_receipt(text: str) -> dict:
                 
         if sum_matched:
             amount = sum_matched
+            amount_confidence = "high"
         elif bare_nums:
             amount = max(bare_nums)
+            amount_confidence = "low"
 
     amount = round(amount, 2)
 
     # ── Date ──────────────────────────────────
     expense_date = datetime.now().strftime("%Y-%m-%d")
+    date_confidence = "low"
+    
+    # 1. Try numeric date formats
     date_re = [
         (r'\b(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{4})\b', "%d/%m/%Y"),
         (r'\b(\d{4})[/\-\.](\d{1,2})[/\-\.](\d{1,2})\b', "%Y/%m/%d"),
         (r'\b(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{2})\b',  "%d/%m/%y"),
     ]
+    date_found = False
     for pat, _ in date_re:
         m = re.search(pat, text)
         if m:
@@ -644,10 +656,53 @@ def parse_receipt(text: str) -> dict:
             for fmt in ["%d/%m/%Y", "%Y/%m/%d", "%d/%m/%y"]:
                 try:
                     expense_date = datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+                    date_confidence = "high"
+                    date_found = True
                     break
                 except ValueError:
                     pass
-            break
+            if date_found:
+                break
+
+    # 2. Try textual month formats (e.g. 25-Jul-2009, 25 July 2009, July 25, 2009)
+    if not date_found:
+        months_pat = r'(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)'
+        month_map = {
+            "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+            "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+            "aug": 8, "august": 8, "sep": 9, "september": 9, "oct": 10, "october": 10,
+            "nov": 11, "november": 11, "dec": 12, "december": 12
+        }
+        # Pattern A: "25 Jul 2009" / "25-Jul-2009"
+        m_a = re.search(r'\b(\d{1,2})[\s\-\./,]+(' + months_pat + r')[\s\-\./,]+(\d{2,4})\b', text, re.IGNORECASE)
+        if m_a:
+            try:
+                day = int(m_a.group(1))
+                m_str = m_a.group(2).lower()
+                y_str = m_a.group(3)
+                year = 2000 + int(y_str) if len(y_str) == 2 else int(y_str)
+                month = month_map.get(m_str, 1)
+                expense_date = datetime(year, month, day).strftime("%Y-%m-%d")
+                date_confidence = "high"
+                date_found = True
+            except ValueError:
+                pass
+        
+        # Pattern B: "Jul 25, 2009"
+        if not date_found:
+            m_b = re.search(r'\b(' + months_pat + r')[\s\-\./,]+(\d{1,2})[\s\-\./,]+(\d{2,4})\b', text, re.IGNORECASE)
+            if m_b:
+                try:
+                    m_str = m_b.group(1).lower()
+                    day = int(m_b.group(2))
+                    y_str = m_b.group(3)
+                    year = 2000 + int(y_str) if len(y_str) == 2 else int(y_str)
+                    month = month_map.get(m_str, 1)
+                    expense_date = datetime(year, month, day).strftime("%Y-%m-%d")
+                    date_confidence = "high"
+                    date_found = True
+                except ValueError:
+                    pass
 
     # ── Fuel-specific fields ───────────────────
     liters         = None
@@ -772,6 +827,7 @@ def parse_receipt(text: str) -> dict:
 
     # ── Vendor / Workshop ─────────────────────
     vendor = None
+    vendor_confidence = "low"
     # 1. "For SKY AUTOMOBILES" pattern (ignoring client indicators like M/s)
     for_m = re.search(
         r'\bfor\s+([A-Z][A-Za-z0-9 &\.\-]{2,40})',
@@ -779,6 +835,7 @@ def parse_receipt(text: str) -> dict:
     )
     if for_m:
         vendor = for_m.group(1).strip()
+        vendor_confidence = "high"
     # 2. Regex-based company name detection (works even if OCR has no newlines)
     if not vendor:
         company_re = re.search(
@@ -791,17 +848,20 @@ def parse_receipt(text: str) -> dict:
         )
         if company_re:
             vendor = company_re.group(1).strip()
+            vendor_confidence = "high"
     # 3. Fall back to first meaningful non-numeric line (truncated to 100 chars)
     if not vendor:
         for line in lines[:4]:
             if len(line) > 3 and not re.match(r'^[\d\W]+$', line):
                 vendor = line[:100].strip()
+                vendor_confidence = "low"
                 break
     # 4. Last resort: extract first meaningful word cluster from raw text
     if not vendor and lines:
         words_m = re.match(r'^([A-Za-z][A-Za-z\s]{3,60}?)(?:\s+(?:GSTIN|GST|Rs|₹|\d))', text.strip())
         if words_m:
             vendor = words_m.group(1).strip()[:100]
+            vendor_confidence = "low"
 
     # ── Invoice Number ────────────────────────
     invoice_number = None
@@ -894,8 +954,11 @@ def parse_receipt(text: str) -> dict:
             "invoice_number", "contact_number", "paid_to", "raw_text"
         }
 
-    res = {k: v for k, v in res.items() if k in allowed_keys}
-    return res
+    parsed = {k: v for k, v in res.items() if k in allowed_keys}
+    parsed["amount_confidence"] = amount_confidence
+    parsed["vendor_confidence"] = vendor_confidence
+    parsed["date_confidence"] = date_confidence
+    return parsed
 
 
 
