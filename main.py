@@ -432,11 +432,14 @@ def parse_receipt(text: str) -> dict:
             pass
 
     # ── Category ──────────────────────────────
-    # NOTE: Check Maintenance FIRST – its keywords are more specific to workshops.
-    # Many maintenance receipts mention "shell" (engine oil brand), "litre" (oil qty),
-    # or "pump" (water pump part) which would falsely trigger Fuel if checked first.
+    # NOTE: Check absolute fuel brands first to prevent generic words like "service" (e.g. "FREM AUTO SERVICE")
+    # from falsely classifying fuel receipts as Maintenance.
     category = "Other"
 
+    absolute_fuel_brands = [
+        "indian oil", "indianoil", "iocl", "hpcl", "bpcl", "bharat petroleum",
+        "hindustan petroleum", "nayara", "petrol pump", "fuel station", "filling station"
+    ]
     maintenance_keywords = [
         "service", "repair", "maintenance", "oil change", "tyre", "tire",
         "battery", "workshop", "garage", "mechanic", "spare", "parts",
@@ -455,7 +458,9 @@ def parse_receipt(text: str) -> dict:
         "parking", "challan", "toll", "traffic fine", "violation"
     ]
 
-    if any(k in text_low for k in maintenance_keywords):
+    if any(k in text_low for k in absolute_fuel_brands):
+        category = "Fuel"
+    elif any(k in text_low for k in maintenance_keywords):
         category = "Maintenance"
     elif any(k in text_low for k in fuel_keywords):
         category = "Fuel"
@@ -840,8 +845,8 @@ def parse_receipt(text: str) -> dict:
     if not vendor:
         company_re = re.search(
             r'\b([A-Z][a-zA-Z]{1,30}'
-            r'(?:\s+[A-Z][a-zA-Z]{1,30}){0,3}'
-            r'\s+(?:Enterprises?|Pvt\.?|Ltd\.?|Limited|Technologies?|Services?'
+            r'(?:[ \t]+[A-Z][a-zA-Z]{1,30}){0,3}'
+            r'[ \t]+(?:Enterprises?|Pvt\.?|Ltd\.?|Limited|Technologies?|Services?'
             r'|Solutions?|Motors?|Automobiles?|Workshop|Garage|Industries?'
             r'|Auto|Trading|Agency|Dealer|Centre|Center|Filling|Petroleum))\b',
             text, re.IGNORECASE
@@ -901,6 +906,21 @@ def parse_receipt(text: str) -> dict:
                 break
             if invoice_number:
                 break
+
+    # ── Mathematical Validation (Fuel Category) ──
+    if category == "Fuel":
+        # Validate rate_per_liter (should be reasonable, e.g. < 250 in India)
+        if rate_per_liter and (rate_per_liter > 250.0 or rate_per_liter <= 0.0):
+            rate_per_liter = None
+            
+        # Try to resolve missing variables mathematically
+        if amount and liters and liters > 0.0 and not rate_per_liter:
+            rate_per_liter = round(amount / liters, 2)
+        elif amount and rate_per_liter and rate_per_liter > 0.0 and not liters:
+            liters = round(amount / rate_per_liter, 2)
+        elif liters and rate_per_liter and not amount:
+            amount = round(liters * rate_per_liter, 2)
+            amount_confidence = "high"
 
     res = {
         "category":        category,
