@@ -56,7 +56,6 @@ class LLMParsedReceipt(BaseModel):
     invoice_number: str | None = Field(None, description="The invoice number or receipt number.")
     taxable_amount: float | None = Field(None, description="The taxable amount before GST/taxes.")
     non_taxable_amount: float | None = Field(None, description="Any non-taxable amount mentioned.")
-    total_amount: float | None = Field(None, description="The grand total amount on the invoice (should generally match 'amount').")
     gst_percentage: float | None = Field(None, description="The GST percentage applied (e.g. 5, 12, 18, 28).")
     gst_amount: float | None = Field(None, description="The total GST tax amount.")
     gst_invoicing_type: str | None = Field(None, description="Type of GST invoicing (e.g., 'B2B', 'B2C').")
@@ -85,11 +84,32 @@ class LLMParsedReceipt(BaseModel):
     
     paid_to: str | None = Field(None, description="The name of the person or entity to whom payment was made.")
     contact_number: str | None = Field(None, description="Phone number or contact info found on the receipt.")
+    gstin: str | None = Field(None, description="The GSTIN (GST registration number) of the merchant/vendor.")
 
 
-def validate_and_parse_with_llm(ocr_text: str) -> dict | None:
+import base64
+import io
+import pypdfium2 as pdfium
+
+def _convert_pdf_to_images(pdf_bytes: bytes) -> list[bytes]:
+    """Render PDF pages to JPEG images in memory using pypdfium2."""
+    images = []
+    try:
+        doc = pdfium.PdfDocument(pdf_bytes)
+        for page in doc:
+            bitmap = page.render(scale=2)  # High resolution
+            pil_img = bitmap.to_pil()
+            img_byte_arr = io.BytesIO()
+            pil_img.save(img_byte_arr, format='JPEG', quality=90)
+            images.append(img_byte_arr.getvalue())
+    except Exception as e:
+        print(f"[PDF Render] Failed to render PDF to images: {e}")
+    return images
+
+def validate_and_parse_with_llm(image_bytes: bytes, content_type: str) -> dict | None:
     """
-    Sends the raw OCR text to Gemini or OpenAI for structured extraction and semantic cleanup.
+    Sends the receipt image (or PDF rendered as images) to Gemini, Azure OpenAI,
+    or OpenAI for multimodal structured extraction and semantic cleanup.
     Returns a dict containing the parsed fields, or None if keys are missing or calls fail.
     """
     gemini_key = os.getenv("GEMINI_API_KEY")
@@ -101,25 +121,28 @@ def validate_and_parse_with_llm(ocr_text: str) -> dict | None:
         print("[LLM Pipeline] No GEMINI_API_KEY, OPENAI_API_KEY, or AZURE_OPENAI_KEY found. Skipping LLM validation.")
         return None
 
+    # 1. Prepare receipt images list
+    if content_type == "application/pdf":
+        images = _convert_pdf_to_images(image_bytes)
+    else:
+        images = [image_bytes]
+
+    if not images:
+        print("[LLM Pipeline] No images extracted from the document.")
+        return None
+
     prompt = (
-        "You are an expert receipt OCR parsing validator. Your job is to extract receipt fields from raw OCR text.\n"
-        "Here is the raw OCR text from a receipt:\n\n"
-        f"--- START OCR TEXT ---\n{ocr_text}\n--- END OCR TEXT ---\n\n"
-        "IMPORTANT: The input raw OCR text might come from a handwritten, faint, or unclear receipt. "
-        "It may contain spelling mistakes, layout shifts, or character substitutions due to OCR errors (for example: "
-        "letter 'S' or 's' instead of digit '5', letter 'I', 'l', or 'i' instead of '1', letter 'O' or 'o' instead of '0', or letter 'Z' or 'z' instead of '2'). "
-        "Use semantic context, word shapes, and standard pricing/liter structures in Indian Rupees to reconstruct the correct details. "
-        "For example, if a fuel rate says '1O4.3' or '104.3O', correct it to '104.30'. If registration number says 'MHl2', correct to 'MH12'.\n\n"
-        "Please extract and populate the fields in the requested schema. Ensure the category is normalized to "
-        "one of the allowed strings ('Fuel', 'Maintenance', 'Vehicle', 'Other'), the date is YYYY-MM-DD, and the numbers are correctly parsed. "
-        "Verify standard calculations: if Fuel, check if amount, liters, and rate_per_liter are mathematically consistent. "
-        "Pay special attention to extracting Invoice Numbers, GST Percentages, Taxable/Total Amounts, Toll/Parking Charges, and any specific Maintenance Items or Limits mentioned in the text."
+        "You are an expert receipt extraction validator. Extract all receipt fields from the provided receipt image(s).\n"
+        "Ensure the category is normalized to one of the allowed strings ('Fuel', 'Maintenance', 'Vehicle', 'Other'), "
+        "the date is in YYYY-MM-DD format, and the numbers are correctly parsed.\n"
+        "Verify standard calculations: if Fuel, check if amount, liters, and rate_per_liter are mathematically consistent.\n"
+        "Pay special attention to extracting Invoice Numbers, GST Percentages, Taxable/Total Amounts, Toll/Parking Charges, and any specific Maintenance Items or Limits mentioned on the receipt."
     )
 
-    # 1. Prioritize Azure OpenAI / AI Studio if key and endpoint are provided
+    # 2. Prioritize Azure OpenAI / AI Studio if key and endpoint are provided
     if azure_openai_key and azure_openai_endpoint:
         try:
-            print("[LLM Pipeline] Calling Azure AI Studio GPT model for structured validation...")
+            print("[LLM Pipeline] Calling Azure AI Studio multimodal model for structured validation...")
             from openai import OpenAI
 
             # Ensure we append /openai/v1 if not present in the endpoint
@@ -133,10 +156,21 @@ def validate_and_parse_with_llm(ocr_text: str) -> dict | None:
             )
             model_name = os.getenv("AZURE_OPENAI_MODEL_NAME", "gpt-4o-mini")
 
+            # Prepare visual content
+            messages_content = [{"type": "text", "text": prompt}]
+            for img in images:
+                b64_img = base64.b64encode(img).decode("utf-8")
+                messages_content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{b64_img}"
+                    }
+                })
+
             completion = client.beta.chat.completions.parse(
                 model=model_name,
                 messages=[
-                    {"role": "user", "content": prompt}
+                    {"role": "user", "content": messages_content}
                 ],
                 response_format=LLMParsedReceipt,
             )
@@ -148,17 +182,26 @@ def validate_and_parse_with_llm(ocr_text: str) -> dict | None:
         except Exception as e:
             print(f"[LLM Pipeline] Azure OpenAI validation failed: {e}")
 
-    # 2. Fallback to Gemini if its key is available
+    # 3. Fallback to Gemini if its key is available
     if gemini_key:
         try:
-            print("[LLM Pipeline] Calling Gemini 2.5 Flash for structured validation...")
+            print("[LLM Pipeline] Calling Gemini 2.5 Flash for multimodal structured validation...")
             from google import genai
             from google.genai import types
 
             client = genai.Client(api_key=gemini_key)
+            
+            # Prepare contents
+            contents = []
+            for img in images:
+                contents.append(
+                    types.Part.from_bytes(data=img, mime_type="image/jpeg")
+                )
+            contents.append(prompt)
+
             response = client.models.generate_content(
                 model='gemini-2.5-flash',
-                contents=prompt,
+                contents=contents,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=LLMParsedReceipt,
@@ -171,17 +214,29 @@ def validate_and_parse_with_llm(ocr_text: str) -> dict | None:
         except Exception as e:
             print(f"[LLM Pipeline] Gemini validation failed: {e}")
 
-    # 3. Fallback to standard OpenAI if key is available
+    # 4. Fallback to standard OpenAI if key is available
     if openai_key:
         try:
-            print("[LLM Pipeline] Calling OpenAI GPT-4o-mini for structured validation...")
+            print("[LLM Pipeline] Calling OpenAI GPT-4o-mini for multimodal structured validation...")
             from openai import OpenAI
 
             client = OpenAI(api_key=openai_key)
+
+            # Prepare visual content
+            messages_content = [{"type": "text", "text": prompt}]
+            for img in images:
+                b64_img = base64.b64encode(img).decode("utf-8")
+                messages_content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{b64_img}"
+                    }
+                })
+
             completion = client.beta.chat.completions.parse(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "user", "content": prompt}
+                    {"role": "user", "content": messages_content}
                 ],
                 response_format=LLMParsedReceipt,
             )
@@ -192,5 +247,7 @@ def validate_and_parse_with_llm(ocr_text: str) -> dict | None:
                 return data
         except Exception as e:
             print(f"[LLM Pipeline] OpenAI validation failed: {e}")
+
+    return None
 
     return None

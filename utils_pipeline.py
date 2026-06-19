@@ -1,6 +1,34 @@
 import os
 import cv2
 import numpy as np
+import threading
+
+_thread_local = threading.local()
+
+def get_thread_local_fsrcnn(model_path: str, scale: int):
+    if not hasattr(_thread_local, "fsrcnn_models"):
+        _thread_local.fsrcnn_models = {}
+    cache_key = (model_path, scale)
+    if cache_key not in _thread_local.fsrcnn_models:
+        if hasattr(cv2, "dnn_superres"):
+            try:
+                sr = cv2.dnn_superres.DnnSuperResImpl_create()
+                sr.readModel(model_path)
+                sr.setModel("fsrcnn", scale)
+                _thread_local.fsrcnn_models[cache_key] = sr
+            except Exception as e:
+                print(f"Error loading FSRCNN model in thread: {e}")
+                _thread_local.fsrcnn_models[cache_key] = None
+        else:
+            _thread_local.fsrcnn_models[cache_key] = None
+    return _thread_local.fsrcnn_models[cache_key]
+
+def get_thread_local_yolo(model_path: str):
+    if not hasattr(_thread_local, "yolo_nets"):
+        _thread_local.yolo_nets = {}
+    if model_path not in _thread_local.yolo_nets:
+        _thread_local.yolo_nets[model_path] = cv2.dnn.readNetFromONNX(model_path)
+    return _thread_local.yolo_nets[model_path]
 
 def check_is_blurry(img_gray: np.ndarray, threshold: float = 100.0) -> tuple[bool, float]:
     """
@@ -18,11 +46,8 @@ def upscale_image_fsrcnn(img: np.ndarray, scale: int = 2) -> np.ndarray:
     model_path = os.path.join("weights", f"FSRCNN_x{scale}.pb")
     if os.path.exists(model_path):
         try:
-            # Check if dnn_superres module exists
-            if hasattr(cv2, "dnn_superres"):
-                sr = cv2.dnn_superres.DnnSuperResImpl_create()
-                sr.readModel(model_path)
-                sr.setModel("fsrcnn", scale)
+            sr = get_thread_local_fsrcnn(model_path, scale)
+            if sr is not None:
                 upscaled = sr.upsample(img)
                 return upscaled
             else:
@@ -134,7 +159,7 @@ def crop_receipt_yolo(image: np.ndarray, model_path: str) -> tuple[np.ndarray, b
     Returns the cropped receipt and a boolean indicating if detection succeeded.
     """
     try:
-        net = cv2.dnn.readNetFromONNX(model_path)
+        net = get_thread_local_yolo(model_path)
         h, w = image.shape[:2]
         
         # YOLO input size is typically 640x640

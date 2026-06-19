@@ -54,7 +54,6 @@ function App() {
         invoice_number: "",
         taxable_amount: "",
         non_taxable_amount: "",
-        total_amount: "",
         km_limit: "",
         hour_limit: "",
         excess_km_rate: "",
@@ -202,7 +201,6 @@ function App() {
             
             // Explicitly map some new fields that need float/int parsing (or rely on Pydantic)
             taxable_amount: form.taxable_amount ? parseFloat(form.taxable_amount) : null,
-            total_amount: form.total_amount ? parseFloat(form.total_amount) : null,
             gst_amount: form.gst_amount ? parseFloat(form.gst_amount) : null,
         };
 
@@ -265,11 +263,11 @@ function App() {
         setScanLoading(true);
         setScanResult(null);
         try {
-            setScanStep("Uploading files to Azure OCR...");
+            setScanStep("Uploading files...");
             const formData = new FormData();
             scanFiles.forEach(file => formData.append("files", file));
 
-            setScanStep("Reading receipts with Azure Computer Vision...");
+            setScanStep("Analyzing receipts visually with multimodal AI...");
             const res = await fetch("/scan-receipt", { method: "POST", body: formData });
 
             if (!res.ok) {
@@ -308,7 +306,7 @@ function App() {
         setScanResult(null);
         setScanVerifyData(null);
         try {
-            setScanStep("Reading receipts with Azure OCR...");
+            setScanStep("Analyzing receipts visually with multimodal AI...");
             const formData = new FormData();
             scanFiles.forEach(file => formData.append("files", file));
             const res = await fetch("/scan-receipt-debug", { method: "POST", body: formData });
@@ -356,7 +354,6 @@ function App() {
                     invoice_number: data.invoice_number || null,
                     taxable_amount: data.taxable_amount ? parseFloat(data.taxable_amount) : null,
                     non_taxable_amount: data.non_taxable_amount ? parseFloat(data.non_taxable_amount) : null,
-                    total_amount: data.total_amount ? parseFloat(data.total_amount) : null,
                     km_limit: data.km_limit ? parseInt(data.km_limit, 10) : null,
                     hour_limit: data.hour_limit ? parseInt(data.hour_limit, 10) : null,
                     excess_km_rate: data.excess_km_rate ? parseFloat(data.excess_km_rate) : null,
@@ -570,7 +567,7 @@ function App() {
                                         <i className="fa-solid fa-wand-magic-sparkles"></i>
                                         AI Receipt Scanner
                                     </p>
-                                    <p className="text-xs text-slate-500">Upload a photo of any receipt. Azure OCR will extract the data and auto-save it.</p>
+                                    <p className="text-xs text-slate-500">Upload a photo of any receipt. Multimodal AI will visually extract data and auto-save it.</p>
                                 </div>
 
                                 {/* Drop Zone */}
@@ -654,7 +651,7 @@ function App() {
                                         <div className="space-y-1.5 pl-2">
                                             {[
                                                 { label: "Upload Files", icon: "fa-cloud-arrow-up" },
-                                                { label: "Azure OCR – Concurrently Extract Text", icon: "fa-eye" },
+                                                { label: "Multimodal AI Visual Scanning", icon: "fa-eye" },
                                                 { label: "Categorise & Parse Fields", icon: "fa-tags" },
                                                 { label: "Save to MySQL Database", icon: "fa-database" },
                                             ].map((step, i) => (

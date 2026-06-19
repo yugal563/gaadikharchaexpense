@@ -6,13 +6,14 @@ from fastapi import HTTPException
 
 AZURE_ENDPOINT = os.getenv("AZURE_ENDPOINT")
 AZURE_OCR_KEY = os.getenv("AZURE_OCR_KEY")
+MODEL_ID = os.getenv("MODEL_ID", "prebuilt-receipt")
 
 async def submit_prebuilt_receipt(image_bytes: bytes) -> dict:
-    """Submit image to Azure Document Intelligence prebuilt-receipt model and return parsed receipt.
+    """Submit image to Azure Document Intelligence model and return parsed receipt.
     Returns a dict with keys like 'MerchantName', 'TransactionDate', 'Total', 'Items'.
     """
     analyze_url = (
-        f"{AZURE_ENDPOINT.rstrip('/')}/documentintelligence/documentModels/prebuilt-receipt:analyze?api-version=2024-11-30"
+        f"{AZURE_ENDPOINT.rstrip('/')}/documentintelligence/documentModels/{MODEL_ID}:analyze?api-version=2024-11-30"
     )
     submit_headers = {
         "Ocp-Apim-Subscription-Key": AZURE_OCR_KEY,
