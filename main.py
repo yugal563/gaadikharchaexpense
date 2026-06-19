@@ -907,6 +907,62 @@ def parse_receipt(text: str) -> dict:
             if invoice_number:
                 break
 
+    # ── Contact Number ────────────────────────
+    contact_number = None
+    # Match mobile numbers (10 digits starting with 6-9, optional +91 or 0 prefix)
+    # or landline numbers (e.g. 022-25792196 or similar)
+    phone_m = re.search(
+        r'(?:mob(?:ile)?|tel|phone|ph)\s*[:\-]?\s*(?:\+?91[ \t]*)?([6-9]\d{9}|0\d{2,4}[\-\s]?\d{6,8})\b',
+        text, re.IGNORECASE
+    )
+    if not phone_m:
+        # Fallback: search for any 10-digit number starting with 6-9
+        phone_m = re.search(r'\b([6-9]\d{9})\b', text)
+    if phone_m:
+        contact_number = re.sub(r'[\s\-]', '', phone_m.group(1))
+
+    # ── Taxable Amount / GST ──────────────────
+    taxable_amount = None
+    gst_amount = None
+    gst_percentage = None
+
+    # Taxable Amount (Subtotal before tax)
+    taxable_m = re.search(
+        r'(?:sub\s*total|taxable\s*amt|taxable\s*amount|value\s*of\s*goods|basic\s*val|assessable\s*val)\s*[:\-]?\s*(?:rs\.?|₹)?\s*([\d,]+(?:\.\d{1,2})?)',
+        text, re.IGNORECASE
+    )
+    if taxable_m:
+        try: taxable_amount = float(taxable_m.group(1).replace(",", ""))
+        except ValueError: pass
+
+    # GST / Tax Amount
+    tax_m = re.search(
+        r'(?:cgst\s*amt|sgst\s*amt|igst\s*amt|total\s*tax|tax\s*amount|gst\s*amt|vat\s*amt|vat|gst)\s*[:\-]?\s*(?:rs\.?|₹)?\s*([\d,]+(?:\.\d{1,2})?)',
+        text, re.IGNORECASE
+    )
+    if tax_m:
+        try: gst_amount = float(tax_m.group(1).replace(",", ""))
+        except ValueError: pass
+
+    # GST Percentage
+    pct_m = re.search(
+        r'(?:gst|vat)\s*(?:percentage|rate|%)?\s*[:\-]?\s*([\d]+(?:\.\d+)?)\s*%',
+        text, re.IGNORECASE
+    )
+    if pct_m:
+        try: gst_percentage = float(pct_m.group(1))
+        except ValueError: pass
+
+    # Mathematical correction for tax values
+    if amount and amount > 0.0:
+        if taxable_amount and not gst_amount:
+            gst_amount = round(amount - taxable_amount, 2)
+        elif gst_amount and not taxable_amount:
+            taxable_amount = round(amount - gst_amount, 2)
+        elif gst_percentage and gst_percentage > 0.0 and not taxable_amount and not gst_amount:
+            taxable_amount = round(amount / (1.0 + gst_percentage / 100.0), 2)
+            gst_amount = round(amount - taxable_amount, 2)
+
     # ── Mathematical Validation (Fuel Category) ──
     if category == "Fuel":
         # Validate rate_per_liter (should be reasonable, e.g. < 250 in India)
@@ -937,6 +993,11 @@ def parse_receipt(text: str) -> dict:
         "remarks":         f"[OCR] Scanned on {datetime.now().strftime('%d %b %Y %H:%M')}",
         "paid":            True,
         "invoice_number":  invoice_number,
+        "taxable_amount":  taxable_amount,
+        "non_taxable_amount": None,
+        "gst_percentage":  gst_percentage,
+        "gst_amount":      gst_amount,
+        "contact_number":  contact_number,
         "raw_text":        text,
     }
 

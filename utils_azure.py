@@ -175,17 +175,12 @@ async def process_azure_document_intelligence(image_bytes: bytes, content_type: 
     preprocessed_bytes = image_bytes
 
     async with ReusableClientContext(get_azure_client()) as client:
-        # Start all tasks concurrently
-        read_task = asyncio.create_task(submit_azure_model(preprocessed_bytes, "prebuilt-read", client))
-        receipt_task = asyncio.create_task(submit_azure_model(preprocessed_bytes, "prebuilt-receipt", client))
-        invoice_task = asyncio.create_task(submit_azure_model(preprocessed_bytes, "prebuilt-invoice", client))
-        
         # 1. Wait for prebuilt-read first (fast path)
         read_res = None
         raw_text = ""
         regex_parsed = {}
         try:
-            read_res = await read_task
+            read_res = await submit_azure_model(preprocessed_bytes, "prebuilt-read", client)
             raw_text = extract_text_from_read(read_res)
             from main import parse_receipt
             regex_parsed = parse_receipt(raw_text) if raw_text else {}
@@ -199,16 +194,7 @@ async def process_azure_document_intelligence(image_bytes: bytes, content_type: 
                 and regex_parsed.get("vendor_confidence") == "high"
                 and regex_parsed.get("date_confidence") == "high"
             ):
-                # Core fields exist, cancel standard models to return early
-                receipt_task.cancel()
-                invoice_task.cancel()
-                # Await cancellation silently
-                try:
-                    await asyncio.gather(receipt_task, invoice_task, return_exceptions=True)
-                except asyncio.CancelledError:
-                    pass
-                
-                # Build result using regex parsed values
+                # Core fields exist, build result using regex parsed values
                 vendor = regex_parsed.get("vendor")
                 category = regex_parsed.get("category", "Other")
                 expense_date = regex_parsed.get("expense_date")
@@ -245,8 +231,13 @@ async def process_azure_document_intelligence(image_bytes: bytes, content_type: 
                 
         except Exception as read_err:
             print(f"[Azure Pipeline] prebuilt-read failed: {read_err}")
+            read_res = read_err
             
         # 2. Fallback path: wait for receipt and invoice models
+        print("[Azure Pipeline] Early return check failed. Running heavy fallback models...")
+        receipt_task = asyncio.create_task(submit_azure_model(preprocessed_bytes, "prebuilt-receipt", client))
+        invoice_task = asyncio.create_task(submit_azure_model(preprocessed_bytes, "prebuilt-invoice", client))
+        
         receipt_res, invoice_res = await asyncio.gather(
             receipt_task, invoice_task, return_exceptions=True
         )
