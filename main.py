@@ -803,6 +803,45 @@ def parse_receipt(text: str) -> dict:
         if words_m:
             vendor = words_m.group(1).strip()[:100]
 
+    # ── Invoice Number ────────────────────────
+    invoice_number = None
+    matches = re.finditer(
+        r'\b(invoice|bill|job|inv|receipt)\b\s*(?:no\.?|num(?:ber)?|#)?[ \t]*[:\-]?[ \t]*([A-Za-z0-9\-]{3,20})\b',
+        text, re.IGNORECASE
+    )
+    blacklist = {
+        "date", "time", "cash", "memo", "null", "none", "hosted", "on", "page", 
+        "tel", "phone", "contact", "mobile", "mob", "fax", "original", "copy", 
+        "customer", "retail", "service", "parts", "invoice", "bill", "job", 
+        "receipt", "no", "num", "number", "model", "amount", "amt", "total", 
+        "sub", "tax", "gst", "vat", "sum", "rate", "qty", "price", "particulars",
+        "rs", "inr"
+    }
+    for m in matches:
+        val = m.group(2).strip()
+        if val.lower() not in blacklist:
+            # Avoid single character non-digit numbers
+            if not val.isdigit() and len(val) < 3:
+                continue
+            invoice_number = val
+            break
+            
+    if not invoice_number:
+        # Fallback: search first 15 lines for a 4-to-8 digit number close to a date or alone on a line
+        for line in text.split("\n")[:15]:
+            if any(kw in line.lower() for kw in {"phone", "tel", "mob", "contact", "fax", "tin", "gstin"}):
+                continue
+            nums = re.findall(r'\b(\d{4,8})\b', line)
+            for num in nums:
+                if num in {"2009", "2024", "2025", "2026", "2000"}:
+                    continue
+                if len(num) == 6 and any(kw in line.lower() for kw in {"pin", "delhi", "road", "area", "sector", "street"}):
+                    continue
+                invoice_number = num
+                break
+            if invoice_number:
+                break
+
     res = {
         "category":        category,
         "expense_date":    expense_date,
@@ -817,6 +856,7 @@ def parse_receipt(text: str) -> dict:
         "service_type":    (service_type or "")[:100] or None,
         "remarks":         f"[OCR] Scanned on {datetime.now().strftime('%d %b %Y %H:%M')}",
         "paid":            True,
+        "invoice_number":  invoice_number,
         "raw_text":        text,
     }
 
@@ -824,7 +864,7 @@ def parse_receipt(text: str) -> dict:
         allowed_keys = {
             "category", "expense_date", "amount", "liters", "rate_per_liter",
             "petrol_pump", "vendor", "odometer", "registration_no", "location",
-            "remarks", "paid", "raw_text"
+            "remarks", "paid", "invoice_number", "contact_number", "raw_text"
         }
     elif category == "Maintenance":
         allowed_keys = {
@@ -1386,6 +1426,48 @@ def create_expense(expense: Expense):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def filter_db_record_by_category(record: dict) -> dict:
+    if not record:
+        return record
+        
+    category = record.get("category")
+    
+    # Common columns that apply to all categories
+    common_keys = {
+        "expense_id", "category", "vehicle", "expense_date", "amount", 
+        "paid", "remarks", "location", "registration_no", "contact_number", 
+        "invoice_number", "paid_to"
+    }
+    
+    if category == "Fuel":
+        category_keys = {
+            "liters", "rate_per_liter", "petrol_pump", "vendor", "odometer"
+        }
+    elif category == "Maintenance":
+        category_keys = {
+            "vendor", "odometer", "service_type", "vendor_type", 
+            "maintenance_item", "custom_maintenance_item", "taxable_amount", 
+            "non_taxable_amount", "gst_percentage", "gst_amount", "gst_invoicing_type"
+        }
+    elif category == "Vehicle":
+        category_keys = {
+            "challan_no", "challan_type", "violation_type", "issued_by", "due_date", 
+            "parking_location", "km_limit", "hour_limit", "excess_km_rate", 
+            "excess_hour_rate", "excess_km_amount", "excess_hour_amount", 
+            "driver_allowance", "toll_charges", "parking_charges", "other_charges", 
+            "gst_applicable_on_parking", "gst_applicable_on_toll", 
+            "gst_applicable_on_other_charges", "gst_percentage", "gst_amount", 
+            "tds_percentage", "tds_amount", "service_type"
+        }
+    else: # "Other"
+        category_keys = {
+            "party_type", "party", "contact", "expense_name"
+        }
+        
+    allowed_keys = common_keys | category_keys
+    return {k: v for k, v in record.items() if k in allowed_keys}
+
+
 @app.get("/expenses")
 def get_expenses():
     conn = get_connection()
@@ -1395,6 +1477,8 @@ def get_expenses():
         if data and not isinstance(data[0], dict):
             columns = [col[0] for col in cursor.description]
             data = [dict(zip(columns, row)) for row in data]
+        
+        data = [filter_db_record_by_category(row) for row in data]
     conn.close()
     return data
 
@@ -1408,6 +1492,9 @@ def get_expense(expense_id: int):
         if data and not isinstance(data, dict):
             columns = [col[0] for col in cursor.description]
             data = dict(zip(columns, data))
+        
+        if data:
+            data = filter_db_record_by_category(data)
     conn.close()
     return data
 
@@ -1431,5 +1518,7 @@ def get_expenses_by_category(category: str):
         if data and not isinstance(data[0], dict):
             columns = [col[0] for col in cursor.description]
             data = [dict(zip(columns, row)) for row in data]
+        
+        data = [filter_db_record_by_category(row) for row in data]
     conn.close()
     return data
