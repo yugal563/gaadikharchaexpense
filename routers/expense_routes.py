@@ -53,7 +53,7 @@ def create_expense(payload: dict):
             if expense.model_extra:
                 expense_dict.update(expense.model_extra)
 
-            if orig_category not in ("Fuel", "Maintenance", "Vehicle"):
+            if orig_category not in ("Fuel", "Maintenance", "Vehicle", "Other"):
                 db_category = "Other"
                 custom_remarks = f"[Custom JSON]: {json.dumps(expense_dict)}"
                 expense_name_val = expense.expense_name or orig_category

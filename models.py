@@ -41,9 +41,9 @@ class Expense:
             "paid_to", "contact_number"
         ]
 
-        # 4. Map optional fields. Non-standard categories (including "Other") allow dynamic fields.
+        # 4. Map optional fields. Non-standard categories (except Fuel/Maintenance/Vehicle/Other) allow dynamic fields.
         self.model_extra = {}
-        is_standard_category = self.category in ("Fuel", "Maintenance", "Vehicle")
+        is_standard_category = self.category in ("Fuel", "Maintenance", "Vehicle", "Other")
 
         for key, val in data.items():
             if key in required_fields:
