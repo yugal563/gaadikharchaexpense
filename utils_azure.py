@@ -191,14 +191,15 @@ async def process_azure_document_intelligence(image_bytes: bytes, content_type: 
 
         # 2. Run LLM text completions on raw_text using llm_providers
         from llm_providers import get_llm_provider
-        from engine.prompts import (
+        from smart_engine import (
             build_pass1_prompt,
             build_pass2_prompt,
             build_single_pass_prompt,
+            detect_category_from_llm_response,
+            extract_and_map_fields,
+            validate_extracted_fields,
+            filter_fields_by_category,
         )
-        from engine.category import detect_category_from_llm_response
-        from engine.field_mapper import extract_and_map_fields
-        from engine.validator import validate_extracted_fields, filter_fields_by_category
 
         provider = get_llm_provider()
         print(f"[Azure+LLM Pipeline] Using provider: {provider.provider_name}")
@@ -294,7 +295,7 @@ async def process_azure_document_intelligence(image_bytes: bytes, content_type: 
 
 
 def _filter_and_format_response(parsed: dict, category: str, start_time: float) -> dict:
-    from services.db_service import filter_db_record_by_category
+    from main import filter_db_record_by_category
     filtered = filter_db_record_by_category(parsed)
     latency = time.time() - start_time
     return {
