@@ -118,16 +118,8 @@ async def process_llm_extraction(image_bytes: bytes, content_type: str) -> dict:
                     detail=f"LLM Pass 2 returned empty response ({provider.provider_name})"
                 )
 
-            # Merge: Pass 2 takes priority, fall back to Pass 1 for missing fields
-            merged = {}
-            for key in set(list(pass1_response.keys()) + list(pass2_response.keys())):
-                val2 = pass2_response.get(key)
-                val1 = pass1_response.get(key)
-                if val2 is not None and val2 != "" and val2 != "null":
-                    merged[key] = val2
-                elif val1 is not None and val1 != "" and val1 != "null":
-                    merged[key] = val1
-
+            # Direct use of Pass 2 response (No fallback to Pass 1)
+            merged = pass2_response
             # Force the detected category (don't let Pass 2 override if it disagrees)
             merged["category"] = category
 

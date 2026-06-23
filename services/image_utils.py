@@ -18,7 +18,6 @@ from PIL import Image
 
 from utils_pipeline import (
     crop_receipt_yolo,
-    crop_receipt_contour,
     check_is_blurry,
     upscale_image_fsrcnn,
 )
@@ -93,7 +92,7 @@ def preprocess_image_with_opencv(image_bytes: bytes, content_type: str) -> bytes
     """
     If the file is an image (not a PDF), perform full preprocessing to enhance OCR legibility:
     1. Decode the image using cv2.imdecode().
-    2. Crop/Deskew using YOLO Receipt Detection (with contour fallback).
+    2. Crop/Deskew using YOLO Receipt Detection (no fallback).
     3. OpenCV Preprocessing (CLAHE, Denoise, Thresholding).
     4. Blur Detection (Laplacian Variance).
     5. FSRCNN Super Resolution (if blurry).
@@ -115,7 +114,7 @@ def preprocess_image_with_opencv(image_bytes: bytes, content_type: str) -> bytes
             scale = max_dim / max(h, w)
             img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
 
-        # 2. YOLO Crop with Contour Fallback (Receipt Detection & Crop/Deskew)
+        # 2. YOLO Crop (No fallback) (Receipt Detection & Crop/Deskew)
         yolo_path = os.path.join("weights", "yolov8n-document.onnx")
         yolo_fallback_path = os.path.join("weights", "yolov5n-document.onnx")
 
@@ -126,9 +125,6 @@ def preprocess_image_with_opencv(image_bytes: bytes, content_type: str) -> bytes
             cropped, crop_success = crop_receipt_yolo(img, yolo_path)
         elif os.path.exists(yolo_fallback_path):
             cropped, crop_success = crop_receipt_yolo(img, yolo_fallback_path)
-
-        if not crop_success:
-            cropped = crop_receipt_contour(img)
 
         # 3. Convert color to grayscale
         gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)

@@ -41,7 +41,6 @@ def check_is_blurry(img_gray: np.ndarray, threshold: float = 100.0) -> tuple[boo
 def upscale_image_fsrcnn(img: np.ndarray, scale: int = 2) -> np.ndarray:
     """
     Upscale the image using FSRCNN via cv2.dnn_superres if the model is available.
-    Otherwise, fall back to cv2.INTER_LANCZOS4 upscaling.
     """
     model_path = os.path.join("weights", f"FSRCNN_x{scale}.pb")
     if os.path.exists(model_path):
@@ -51,13 +50,12 @@ def upscale_image_fsrcnn(img: np.ndarray, scale: int = 2) -> np.ndarray:
                 upscaled = sr.upsample(img)
                 return upscaled
             else:
-                print("OpenCV dnn_superres module not available in this cv2 build. Falling back to Lanczos.")
+                print("OpenCV dnn_superres module not available in this cv2 build.")
         except Exception as e:
-            print(f"FSRCNN upscaling failed: {e}. Falling back to Lanczos.")
+            print(f"FSRCNN upscaling failed: {e}.")
     
-    # Fallback to Lanczos interpolation
-    h, w = img.shape[:2]
-    return cv2.resize(img, (w * scale, h * scale), interpolation=cv2.INTER_LANCZOS4)
+    return img
+
 
 def order_points(pts: np.ndarray) -> np.ndarray:
     """
@@ -101,57 +99,7 @@ def four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
     warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
     return warped
 
-def crop_receipt_contour(image: np.ndarray) -> np.ndarray:
-    """
-    Locate and crop receipt using OpenCV contours.
-    Returns cropped image, or original image if no clear receipt polygon is detected.
-    """
-    h, w = image.shape[:2]
-    # Resize to a standard width for faster processing and more consistent contour detection
-    ratio = h / 500.0
-    orig = image.copy()
-    img_resized = cv2.resize(image, (int(w / ratio), 500))
-    
-    gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
-    # Blur to remove noise
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    # Canny edge detection
-    edged = cv2.Canny(blurred, 75, 200)
-    
-    # Find contours
-    contours, _ = cv2.findContours(edged.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-    contours = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
-    
-    for c in contours:
-        peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-        
-        # Check if approximated contour has 4 points
-        if len(approx) == 4:
-            pts = approx.reshape(4, 2) * ratio
-            try:
-                warped = four_point_transform(orig, pts)
-                # Only return if the cropped region is reasonably large (at least 15% of original area)
-                if (warped.shape[0] * warped.shape[1]) > (h * w * 0.15):
-                    return warped
-            except Exception:
-                pass
-                
-    # Fallback: crop using the bounding rect of the largest contour if it's reasonably large
-    contours_all, _ = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours_all:
-        largest = max(contours_all, key=cv2.contourArea)
-        if cv2.contourArea(largest) > (img_resized.shape[0] * img_resized.shape[1] * 0.1):
-            x, y, w_c, h_c = cv2.boundingRect(largest)
-            pts = np.array([
-                [x, y], [x + w_c, y], [x + w_c, y + h_c], [x, y + h_c]
-            ], dtype="float32") * ratio
-            try:
-                return four_point_transform(orig, pts)
-            except Exception:
-                pass
-                
-    return orig
+
 
 def crop_receipt_yolo(image: np.ndarray, model_path: str) -> tuple[np.ndarray, bool]:
     """
@@ -227,9 +175,9 @@ def preprocess_receipt_pipeline(image_bytes: bytes) -> bytes:
     """
     Execute the full CPU-optimized preprocessing pipeline:
     1. Decode image.
-    2. Detect receipt boundary and crop (YOLO ONNX with OpenCV contour fallback).
+    2. Detect receipt boundary and crop (YOLO ONNX, no fallback).
     3. Perform blur check (Laplacian variance).
-    4. If blurry, perform super-resolution upscaling (FSRCNN with Lanczos fallback).
+    4. If blurry, perform super-resolution upscaling (FSRCNN, no fallback).
     5. Convert to grayscale and apply CLAHE.
     6. Denoise and apply adaptive threshold binarization for clean OCR results.
     7. Return the preprocessed JPEG bytes.
@@ -248,7 +196,7 @@ def preprocess_receipt_pipeline(image_bytes: bytes) -> bytes:
             scale = max_dim / max(h, w)
             img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
             
-        # 2. YOLO Crop with Contour Fallback
+        # 2. YOLO Crop (No fallback)
         yolo_path = os.path.join("weights", "yolov8n-document.onnx")
         yolo_fallback_path = os.path.join("weights", "yolov5n-document.onnx")
         
@@ -259,10 +207,6 @@ def preprocess_receipt_pipeline(image_bytes: bytes) -> bytes:
             cropped, crop_success = crop_receipt_yolo(img, yolo_path)
         elif os.path.exists(yolo_fallback_path):
             cropped, crop_success = crop_receipt_yolo(img, yolo_fallback_path)
-            
-        if not crop_success:
-            # Fallback to contour crop
-            cropped = crop_receipt_contour(img)
             
         # 3. Blur Check on grayscale cropped version
         gray_temp = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)

@@ -25,22 +25,6 @@ def detect_category_from_llm_response(llm_response: dict) -> str:
     if cat_lower in ("vehicle", "challan", "toll", "parking", "traffic"):
         return "Vehicle"
 
-    # ── Vendor-hint fallback for when category field is unhelpful ─────────────
-    vendor = str(llm_response.get("vendor", "")).lower()
-    fuel_hints = ["hpcl", "iocl", "bpcl", "indian oil", "bharat petroleum",
-                  "hindustan petroleum", "nayara", "shell", "petrol", "diesel", "fuel"]
-    if any(h in vendor for h in fuel_hints):
-        return "Fuel"
-
-    maintenance_hints = ["service", "repair", "workshop", "garage", "mechanic",
-                         "spare", "tyre", "tire", "battery"]
-    if any(h in vendor for h in maintenance_hints):
-        return "Maintenance"
-
-    vehicle_hints = ["challan", "toll", "parking", "traffic"]
-    if any(h in vendor for h in vehicle_hints):
-        return "Vehicle"
-
     return "Other"
 
 
