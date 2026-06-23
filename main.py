@@ -1291,29 +1291,6 @@ async def _process_single_file_llm(f: UploadFile):
     return result
 
 
-# ── Scan Receipt (LLM Vision — Two-Pass, High Accuracy) ──
-@app.post("/scan-receipt-llm")
-async def scan_receipt_llm(files: list[UploadFile] = File(...)):
-    """
-    Upload receipt images → LLM Vision extraction (two-pass) → save to MySQL → return JSON.
-    
-    Uses the LLM provider configured by LLM_PROVIDER in .env.
-    Supports: azure_openai, openai, gemini, anthropic, groq (Llama).
-    To switch models, change LLM_PROVIDER + API key in .env and restart.
-    """
-    try:
-        parsed_list = await asyncio.gather(*[_process_single_file_llm(f) for f in files])
-        expense_ids = save_expenses_to_db(parsed_list)
-        return {
-            "message":     f"{len(parsed_list)} Receipt(s) scanned and saved successfully (LLM Vision)!",
-            "expense_ids": expense_ids,
-            "extracted":   parsed_list,
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 
 
