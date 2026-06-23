@@ -11,8 +11,6 @@ def detect_category_from_llm_response(llm_response: dict) -> str:
     Uses the LLM's own classification plus keyword-based verification.
 
     Standard categories: Fuel, Maintenance, Vehicle, Other
-    Custom categories:   Any specific name (e.g. "Salary Slip", "Water Bill",
-                         "Electricity Bill", "Rent Receipt", "Hotel Bill", …)
     """
     category = llm_response.get("category", "Other")
 
@@ -26,15 +24,6 @@ def detect_category_from_llm_response(llm_response: dict) -> str:
         return "Maintenance"
     if cat_lower in ("vehicle", "challan", "toll", "parking", "traffic"):
         return "Vehicle"
-    # Only map to "Other" when the LLM *explicitly* said "other" or "general"
-    if cat_lower in ("other", "general", ""):
-        return "Other"
-
-    # ── Any other non-empty category is a valid custom category ──────────────
-    # Reject noise words that should not become category names on their own
-    _noise = {"bill", "receipt", "invoice", "document", "expense", "unknown", "n/a", "na", "none", "null"}
-    if cat_lower not in _noise and len(category.strip()) > 2:
-        return category.strip().title()  # e.g. "salary slip" → "Salary Slip"
 
     # ── Vendor-hint fallback for when category field is unhelpful ─────────────
     vendor = str(llm_response.get("vendor", "")).lower()

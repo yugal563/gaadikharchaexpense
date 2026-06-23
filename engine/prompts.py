@@ -10,23 +10,14 @@ def build_single_pass_prompt() -> str:
     Build a single-pass extraction prompt containing schemas for all categories.
     Used for extremely low latency document parsing.
     """
-    return """You are analyzing an Indian financial document (receipt, invoice, bill, payslip, or statement).
+    return """You are analyzing an Indian financial document (receipt, invoice, bill, or statement).
 **Task**: Identify the category and extract all relevant fields as a JSON object.
 
 **1. Classify the Category**:
 - "Fuel" — petrol/diesel receipts from fuel stations (HPCL, BPCL, Indian Oil, Shell, etc.)
 - "Maintenance" — vehicle repair/service invoices from workshops/garages
 - "Vehicle" — challans, traffic fines, toll receipts, parking tickets
-- "Salary Slip" — payslips, salary statements, pay stubs showing employee earnings and deductions
-- "Rent Receipt" — house/office rent receipts or lease agreements
-- "Hotel Bill" — hotel stay, accommodation, lodge bills
-- "Food Bill" — restaurant, canteen, food delivery receipts
-- "Medical Bill" — hospital, pharmacy, clinic, lab test bills
-- "Internet Bill" — broadband, mobile data, ISP bills
-- "Electricity Bill" — electricity/power utility bills
-- "Water Bill" — water utility bills
-- Any other **specific descriptive name** (e.g., "Insurance Premium", "Stationery Invoice", "Air Ticket", "Train Ticket") if the document is a clearly identifiable type.
-- Otherwise, default to "Other".
+- "Other" — any other transaction or general receipt.
 
 **2. Extract the Relevant Fields Based on the Category**:
 
@@ -86,41 +77,6 @@ If the category is **Vehicle**, extract:
   - "contact_number" (string): contact number
   - "paid_to" (string): payee name
 
-If the category is **Salary Slip**, extract:
-  - "category": "Salary Slip"
-  - "expense_date" (string): YYYY-MM-DD — use the pay date / paid_on date (last day of the pay period)
-  - "amount" (number): Net Pay / Take-home pay in INR — this is the most important field
-  - "employee_name" (string): full name of the employee
-  - "employee_id" (string): employee ID exactly as shown (e.g. PS67890) — keep alphabetic prefix
-  - "designation" (string): job title/designation
-  - "department" (string): department name
-  - "employer" (string): company/employer name
-  - "pay_period" (string): month and year (e.g. "January 2024")
-  - "bank_name" (string): bank name
-  - "bank_account_number" (string): bank account number
-  - "uan" (string): Universal Account Number (UAN)
-  - "date_of_joining" (string): YYYY-MM-DD
-  - "total_working_days" (integer): total working days in pay period
-  - "lop_days" (integer): loss of pay days
-  - "paid_days" (integer): actual paid days
-  - "gross_earnings" (number): total gross earnings before deductions
-  - "total_deductions" (number): total of all deductions
-  - "net_pay" (number): net / take-home pay (= gross_earnings - total_deductions)
-  - "amount_in_words" (string): net pay in words
-  - "earnings" (object): breakdown of earnings components (basic_salary, hra, conveyance, etc.)
-  - "deductions" (object): breakdown of deduction components (epf, esi, professional_tax, etc.)
-  - "paid" (boolean): true if salary has been disbursed
-
-If the category is a **specific custom bill** (e.g. Water Bill, Electricity Bill):
-  - "category" (string): the specific bill category name (e.g. "Water Bill")
-  - "expense_date" (string): YYYY-MM-DD
-  - "amount" (number): total amount paid in INR (₹)
-  - "vendor" (string): payee/utility name
-  - "invoice_number" (string): invoice/bill reference number
-  - "contact_number" (string): phone number
-  - "paid_to" (string): payee name
-  - Dynamically extract any other relevant fields visible on the bill as custom JSON keys (e.g. "units_consumed", "meter_reading", "consumer_no", "due_date", "previous_reading", etc.).
-
 If the category is **Other**, extract:
   - "category": "Other"
   - "expense_date" (string): YYYY-MM-DD
@@ -152,7 +108,7 @@ def build_pass1_prompt() -> str:
     2. Classify the expense category
     3. Extract basic fields (vendor, date, amount)
     """
-    return """You are analyzing an Indian financial document (receipt, invoice, bill, payslip, or statement).
+    return """You are analyzing an Indian financial document (receipt, invoice, bill, or statement).
 
 **Task**: Extract the following information and return it as a JSON object.
 
@@ -161,17 +117,10 @@ def build_pass1_prompt() -> str:
    - "Fuel" — petrol/diesel receipts from fuel stations (HPCL, BPCL, Indian Oil, Nayara, Shell, etc.)
    - "Maintenance" — vehicle repair/service invoices from workshops/garages
    - "Vehicle" — challans, toll receipts, parking tickets, traffic fines
-   - "Salary Slip" — payslips, salary statements, pay stubs (employee name, basic pay, deductions, net pay)
-   - "Rent Receipt" — rent/lease payment receipts
-   - "Hotel Bill" — hotel/lodge/accommodation bills
-   - "Food Bill" — restaurant, canteen, or food delivery receipts
-   - "Medical Bill" — hospital, pharmacy, diagnostic lab bills
-   - "Internet Bill", "Electricity Bill", "Water Bill" — utility bills
-   - Any other clearly identifiable document type — return a specific, descriptive name (e.g. "Air Ticket", "Train Ticket", "Insurance Premium", "Stationery Invoice").
-   - Otherwise, default to "Other".
+   - "Other" — any other type of transaction or general receipt.
 
 2. Extract these fields:
-   - "category": one of "Fuel", "Maintenance", "Vehicle", "Other" or a specific name like "Water Bill"
+   - "category": one of "Fuel", "Maintenance", "Vehicle", or "Other"
    - "vendor": name of the business/station/workshop/authority
    - "expense_date": date in YYYY-MM-DD format (use Indian DD/MM/YYYY convention for ambiguous dates)
    - "amount": total/grand total amount in INR (the final payable amount, not subtotals)
@@ -263,13 +212,10 @@ def build_pass2_prompt(category: str) -> str:
 **CRITICAL**: Return ONLY a valid JSON object. No markdown fences, no explanation, no extra text.
 Just the raw JSON object starting with {{ and ending with }}."""
     else:
-        # Custom category prompt
-        return f"""You are analyzing an Indian expense document image classified as a custom category: **{category}**
+        # Fallback to general category prompt
+        return f"""You are analyzing an Indian expense document image classified as: **{category}**
 
-**Task**: 
-1. Identify the key fields unique to a **{category}** document (e.g., consumer number, connection ID, billing cycle, units consumed, previous reading, etc.).
-2. Extract those custom fields along with the standard common fields below.
-3. Return all extracted information as a single JSON object.
+**Task**: Extract standard fields from this document and return as a JSON object.
 
 **Standard fields to extract**:
   - "category" (string) (REQUIRED): Must be exactly "{category}"
@@ -279,9 +225,6 @@ Just the raw JSON object starting with {{ and ending with }}."""
   - "invoice_number" (string): Bill number, consumer ID, or invoice reference number
   - "contact_number" (string): Any contact phone number visible on the bill
   - "paid_to" (string): Payee name if visible
-
-**Custom fields to extract**:
-- Identify 3 to 6 fields most relevant to a **{category}** (e.g., "consumer_no", "units_consumed", "billing_cycle", etc.). Use clean snake_case names for these keys and extract their values from the document.
 
 **General Rules**:
 - Dates MUST be in YYYY-MM-DD format. Indian dates are DD/MM/YYYY.

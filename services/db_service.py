@@ -37,15 +37,9 @@ def save_expenses_to_db(parsed_list: list[dict]) -> list[int]:
          %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """
         for parsed in parsed_list:
-            orig_category = parsed.get("category", "Other")
-            if orig_category not in ("Fuel", "Maintenance", "Vehicle", "Other"):
-                db_category = "Other"
-                custom_remarks = f"[Custom JSON]: {json.dumps(parsed)}"
-                expense_name_val = parsed.get("expense_name") or orig_category
-            else:
-                db_category = orig_category
-                custom_remarks = parsed.get("remarks")
-                expense_name_val = parsed.get("expense_name")
+            db_category = parsed.get("category", "Other")
+            custom_remarks = parsed.get("remarks")
+            expense_name_val = parsed.get("expense_name")
 
             cursor.execute(sql, (
                 db_category,
@@ -110,16 +104,6 @@ def filter_db_record_by_category(record: dict) -> dict:
     if not record:
         return record
 
-    remarks = record.get("remarks")
-    if remarks and isinstance(remarks, str) and remarks.startswith("[Custom JSON]:"):
-        try:
-            custom_data = json.loads(remarks[len("[Custom JSON]:"):].strip())
-            record.update(custom_data)
-            record["remarks"] = custom_data.get("remarks")
-            return record
-        except Exception:
-            pass
-
     category = record.get("category")
 
     common_keys = {
@@ -146,11 +130,8 @@ def filter_db_record_by_category(record: dict) -> dict:
             "gst_applicable_on_other_charges", "gst_percentage", "gst_amount",
             "tds_percentage", "tds_amount", "service_type"
         }
-    elif category == "Other":
-        category_keys = {"party_type", "party", "contact", "expense_name"}
     else:
-        # Custom category — return all fields
-        return record
+        category_keys = {"party_type", "party", "contact", "expense_name"}
 
     allowed_keys = common_keys | category_keys
     return {k: v for k, v in record.items() if k in allowed_keys}

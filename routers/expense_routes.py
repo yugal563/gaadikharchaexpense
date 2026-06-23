@@ -48,19 +48,9 @@ def create_expense(payload: dict):
             (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
              %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """
-            orig_category = expense.category
-            expense_dict = expense.model_dump()
-            if expense.model_extra:
-                expense_dict.update(expense.model_extra)
-
-            if orig_category not in ("Fuel", "Maintenance", "Vehicle", "Other"):
-                db_category = "Other"
-                custom_remarks = f"[Custom JSON]: {json.dumps(expense_dict)}"
-                expense_name_val = expense.expense_name or orig_category
-            else:
-                db_category = orig_category
-                custom_remarks = expense.remarks
-                expense_name_val = expense.expense_name
+            db_category = expense.category
+            custom_remarks = expense.remarks
+            expense_name_val = expense.expense_name
 
             cursor.execute(sql, (
                 db_category,

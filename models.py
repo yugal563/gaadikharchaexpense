@@ -41,41 +41,36 @@ class Expense:
             "paid_to", "contact_number"
         ]
 
-        # 4. Map optional fields. Non-standard categories (except Fuel/Maintenance/Vehicle/Other) allow dynamic fields.
-        self.model_extra = {}
-        is_standard_category = self.category in ("Fuel", "Maintenance", "Vehicle", "Other")
-
-        for key, val in data.items():
-            if key in required_fields:
-                continue
-            if key in optional_fields:
-                if val is None or val == "null" or val == "":
-                    setattr(self, key, None)
-                else:
-                    if key in ("odometer", "km_limit", "hour_limit") and val is not None:
-                        try: setattr(self, key, int(float(val)))
-                        except (ValueError, TypeError): setattr(self, key, None)
-                    elif key in ("liters", "rate_per_liter", "taxable_amount", "non_taxable_amount",
-                                 "excess_km_rate", "excess_hour_rate", "excess_km_amount", "excess_hour_amount",
-                                 "driver_allowance", "toll_charges", "parking_charges", "other_charges",
-                                 "tds_percentage", "tds_amount", "gst_percentage", "gst_amount") and val is not None:
-                        try: setattr(self, key, float(val))
-                        except (ValueError, TypeError): setattr(self, key, None)
-                    elif key in ("gst_applicable_on_parking", "gst_applicable_on_toll", "gst_applicable_on_other_charges") and val is not None:
-                        if isinstance(val, str):
-                            setattr(self, key, val.lower() in ("true", "1", "yes"))
-                        else:
-                            setattr(self, key, bool(val))
-                    else:
-                        setattr(self, key, str(val).strip())
+        # 4. Map optional fields. Ignore any custom/dynamic attributes completely.
+        for key in optional_fields:
+            val = data.get(key)
+            if val is None or val == "null" or val == "":
+                setattr(self, key, None)
             else:
-                if not is_standard_category:
-                    self.model_extra[key] = val
+                if key in ("odometer", "km_limit", "hour_limit") and val is not None:
+                    try: setattr(self, key, int(float(val)))
+                    except (ValueError, TypeError): setattr(self, key, None)
+                elif key in ("liters", "rate_per_liter", "taxable_amount", "non_taxable_amount",
+                             "excess_km_rate", "excess_hour_rate", "excess_km_amount", "excess_hour_amount",
+                             "driver_allowance", "toll_charges", "parking_charges", "other_charges",
+                             "tds_percentage", "tds_amount", "gst_percentage", "gst_amount") and val is not None:
+                    try: setattr(self, key, float(val))
+                    except (ValueError, TypeError): setattr(self, key, None)
+                elif key in ("gst_applicable_on_parking", "gst_applicable_on_toll", "gst_applicable_on_other_charges") and val is not None:
+                    if isinstance(val, str):
+                        setattr(self, key, val.lower() in ("true", "1", "yes"))
+                    else:
+                        setattr(self, key, bool(val))
+                else:
+                    setattr(self, key, str(val).strip())
 
         # Ensure all optional fields have a default None if they weren't in data
         for field in optional_fields:
             if not hasattr(self, field):
                 setattr(self, field, None)
+
+        # Empty dict for API route compatibility
+        self.model_extra = {}
 
     def model_dump(self) -> dict:
         """Dump model fields into a dictionary for database persistence compatibility."""

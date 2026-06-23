@@ -46,18 +46,6 @@ def validate_extracted_fields(fields: dict, category: str) -> dict:
     else:
         fields["amount"] = 0.0
 
-    # ── Salary Slip: auto-fill amount from net_pay if missing/zero ──
-    if category == "Salary Slip":
-        net_pay = fields.get("net_pay")
-        if net_pay and (fields.get("amount", 0.0) == 0.0):
-            try:
-                fields["amount"] = round(float(net_pay), 2)
-            except (ValueError, TypeError):
-                pass
-        # Keep employee_id as a string (preserve prefix like PS67890)
-        emp_id = fields.get("employee_id")
-        if emp_id is not None:
-            fields["employee_id"] = str(emp_id).strip()
 
     # ── Registration number cleanup ──
     reg = fields.get("registration_no")
