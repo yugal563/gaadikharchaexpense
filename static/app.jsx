@@ -4,6 +4,7 @@ function App() {
     const [expenses, setExpenses] = useState([]);
     const [loading, setLoading] = useState(true);
     const [categoryFilter, setCategoryFilter] = useState("");
+    const [availableCategories, setAvailableCategories] = useState(["Fuel", "Maintenance", "Vehicle", "Other"]);
     const [searchQuery, setSearchQuery] = useState("");
     const [activeTab, setActiveTab] = useState("all"); // 'all', 'paid', 'unpaid'
     const [selectedExpense, setSelectedExpense] = useState(null); // for details modal
@@ -94,6 +95,12 @@ function App() {
             if (!res.ok) throw new Error("Failed to fetch expenses");
             const data = await res.json();
             setExpenses(data);
+
+            if (!categoryFilter) {
+                const uniqueCats = Array.from(new Set(data.map(item => item.category).filter(Boolean)));
+                const mergedCats = Array.from(new Set(["Fuel", "Maintenance", "Vehicle", "Other", ...uniqueCats]));
+                setAvailableCategories(mergedCats);
+            }
         } catch (err) {
             showToast(err.message, "error");
         } finally {
@@ -375,6 +382,24 @@ function App() {
                     paid_to: data.paid_to || null,
                     contact_number: data.contact_number || null,
                 };
+
+                // Copy over any custom fields not present in standard payload
+                const standardKeys = [
+                    "category", "expense_date", "amount", "liters", "rate_per_liter", "odometer",
+                    "petrol_pump", "vendor", "registration_no", "location", "service_type", "remarks",
+                    "paid", "vendor_type", "parking_location", "maintenance_item", "custom_maintenance_item",
+                    "invoice_number", "taxable_amount", "non_taxable_amount", "km_limit", "hour_limit",
+                    "excess_km_rate", "excess_hour_rate", "excess_km_amount", "excess_hour_amount",
+                    "driver_allowance", "toll_charges", "parking_charges", "other_charges", "tds_percentage",
+                    "tds_amount", "gst_percentage", "gst_amount", "gst_invoicing_type", "gst_applicable_on_parking",
+                    "gst_applicable_on_toll", "gst_applicable_on_other_charges", "paid_to", "contact_number"
+                ];
+                for (const key in data) {
+                    if (!standardKeys.includes(key) && data[key] !== undefined && data[key] !== null) {
+                        payload[key] = data[key];
+                    }
+                }
+
                 const res = await fetch("/expenses", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -767,10 +792,13 @@ function App() {
                                                                     onChange={e => setScanVerifyData(p => { const n = [...p]; n[index] = { ...n[index], category: e.target.value }; return n; })}
                                                                     className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-amber-500"
                                                                 >
-                                                                    <option>Fuel</option>
-                                                                    <option>Maintenance</option>
-                                                                    <option>Vehicle</option>
-                                                                    <option>Other</option>
+                                                                    <option value="Fuel">Fuel</option>
+                                                                    <option value="Maintenance">Maintenance</option>
+                                                                    <option value="Vehicle">Vehicle</option>
+                                                                    <option value="Other">Other</option>
+                                                                    {!["Fuel", "Maintenance", "Vehicle", "Other"].includes(data.category) && data.category && (
+                                                                        <option value={data.category}>{data.category}</option>
+                                                                    )}
                                                                 </select>
                                                             </div>
                                                             <div>
@@ -1473,9 +1501,9 @@ function App() {
                                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
                                 >
                                     <option value="">All Categories</option>
-                                    <option value="Fuel">Fuel</option>
-                                    <option value="Maintenance">Maintenance</option>
-                                    <option value="Vehicle">Vehicle</option>
+                                    {availableCategories.map(cat => (
+                                        <option key={cat} value={cat}>{cat}</option>
+                                    ))}
                                 </select>
                             </div>
 
@@ -1554,6 +1582,13 @@ function App() {
                                             } else if (expense.category === "Vehicle") {
                                                 catColor = "bg-indigo-950/40 text-indigo-400 border-indigo-800/40";
                                                 catIcon = "fa-car";
+                                            } else if (expense.category === "Other") {
+                                                catColor = "bg-slate-800/80 text-slate-300 border-slate-700";
+                                                catIcon = "fa-receipt";
+                                            } else {
+                                                // Dynamic/custom category
+                                                catColor = "bg-violet-950/40 text-violet-400 border-violet-800/40";
+                                                catIcon = "fa-wand-magic-sparkles";
                                             }
 
                                             return (
@@ -1820,6 +1855,50 @@ function App() {
                                             <span className="block text-[10px] text-slate-500 uppercase">Vendor Workshop</span>
                                             <span className="font-bold text-white mt-0.5 inline-block">{selectedExpense.vendor || "N/A"}</span>
                                         </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Dynamic Custom Fields Breakdown */}
+                            {!["Fuel", "Maintenance", "Vehicle", "Other"].includes(selectedExpense.category) && (
+                                <div className="bg-violet-950/15 p-4 border border-violet-800/20 rounded-2xl space-y-3">
+                                    <p className="text-[10px] font-bold text-violet-400 uppercase tracking-widest">
+                                        <i className="fa-solid fa-wand-magic-sparkles mr-1.5"></i>{selectedExpense.category} Details
+                                    </p>
+                                    <div className="grid grid-cols-2 gap-3 text-xs">
+                                        {(() => {
+                                            const standardKeys = [
+                                                "expense_id", "category", "vehicle", "expense_date", "amount", 
+                                                "paid", "remarks", "location", "registration_no", "contact_number", 
+                                                "invoice_number", "paid_to", "raw_text", "vendor_type",
+                                                "parking_location", "maintenance_item", "custom_maintenance_item",
+                                                "km_limit", "hour_limit", "excess_km_rate", "excess_hour_rate",
+                                                "excess_km_amount", "excess_hour_amount", "driver_allowance",
+                                                "toll_charges", "parking_charges", "other_charges", "tds_percentage",
+                                                "tds_amount", "gst_percentage", "gst_amount", "gst_invoicing_type",
+                                                "gst_applicable_on_parking", "gst_applicable_on_toll",
+                                                "gst_applicable_on_other_charges", "vendor", "petrol_pump",
+                                                "liters", "rate_per_liter", "odometer", "service_type",
+                                                "challan_no", "challan_type", "violation_type", "issued_by",
+                                                "due_date", "party_type", "party", "contact", "expense_name"
+                                            ];
+                                            return Object.entries(selectedExpense)
+                                                .filter(([key, val]) => {
+                                                    if (val === null || val === undefined || val === "") return false;
+                                                    return !standardKeys.includes(key);
+                                                })
+                                                .map(([key, val]) => {
+                                                    const humanKey = key.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+                                                    return (
+                                                        <div key={key}>
+                                                            <span className="block text-[10px] text-slate-500 uppercase">{humanKey}</span>
+                                                            <span className="font-bold text-white mt-0.5 inline-block">
+                                                                {typeof val === "boolean" ? (val ? "Yes" : "No") : val.toString()}
+                                                            </span>
+                                                        </div>
+                                                    );
+                                                });
+                                        })()}
                                     </div>
                                 </div>
                             )}

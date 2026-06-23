@@ -4,7 +4,6 @@ import asyncio
 import httpx
 import time
 import re
-from datetime import datetime
 from fastapi import HTTPException
 
 AZURE_ENDPOINT = os.getenv("AZURE_ENDPOINT")
@@ -149,9 +148,8 @@ def get_clean_fields(fields: dict) -> dict:
             clean[key] = val.get("valueTime", "")
         elif v_type == "array":
             clean[key] = val.get("valueArray", [])
-        else:
             # Fallback checks
-            for k in ["valueString", "valueNumber", "valueDate", "valuePhoneNumber", "valueTime", "valueArray"]:
+            for k in ["valueString", "valueNumber", "valueInteger", "valueBoolean", "valueDate", "valuePhoneNumber", "valueTime", "valueArray", "value"]:
                 if k in val:
                     clean[key] = val[k]
                     break
@@ -175,214 +173,132 @@ async def process_azure_document_intelligence(image_bytes: bytes, content_type: 
     preprocessed_bytes = image_bytes
 
     async with ReusableClientContext(get_azure_client()) as client:
-        # 1. Wait for prebuilt-read first (fast path)
-        read_res = None
-        raw_text = ""
-        regex_parsed = {}
+        # 1. OCR using Azure prebuilt-read
         try:
             read_res = await submit_azure_model(preprocessed_bytes, "prebuilt-read", client)
             raw_text = extract_text_from_read(read_res)
-            from main import parse_receipt
-            regex_parsed = parse_receipt(raw_text) if raw_text else {}
-            
-            # Fast-path check: do we have all critical fields with high confidence?
-            if (
-                regex_parsed.get("vendor") 
-                and regex_parsed.get("expense_date") 
-                and regex_parsed.get("amount")
-                and regex_parsed.get("amount_confidence") == "high"
-                and regex_parsed.get("vendor_confidence") == "high"
-                and regex_parsed.get("date_confidence") == "high"
-            ):
-                # Core fields exist, build result using regex parsed values
-                vendor = regex_parsed.get("vendor")
-                category = regex_parsed.get("category", "Other")
-                expense_date = regex_parsed.get("expense_date")
-                amount = regex_parsed.get("amount") or 0.0
-                invoice_number = regex_parsed.get("invoice_number")
-                location = regex_parsed.get("location") or ""
-                remarks = "[Azure DI Read+Regex (Fast Early Return)]"
-                
-                parsed = {
-                    "category": category,
-                    "expense_date": expense_date,
-                    "amount": float(amount) if amount else 0.0,
-                    "liters": regex_parsed.get("liters"),
-                    "rate_per_liter": regex_parsed.get("rate_per_liter"),
-                    "petrol_pump": clean_string_field(vendor) if category == "Fuel" else None,
-                    "vendor": clean_string_field(vendor),
-                    "registration_no": clean_string_field(regex_parsed.get("registration_no") or ""),
-                    "odometer": regex_parsed.get("odometer"),
-                    "location": clean_string_field(location),
-                    "service_type": clean_string_field(regex_parsed.get("service_type") or ""),
-                    "remarks": remarks,
-                    "paid": True,
-                    "invoice_number": clean_string_field(invoice_number),
-                    "taxable_amount": regex_parsed.get("taxable_amount"),
-                    "non_taxable_amount": regex_parsed.get("non_taxable_amount"),
-                    "gst_percentage": regex_parsed.get("gst_percentage"),
-                    "gst_amount": regex_parsed.get("gst_amount"),
-                    "gst_invoicing_type": clean_string_field(regex_parsed.get("gst_invoicing_type")),
-                    "paid_to": clean_string_field(regex_parsed.get("paid_to")),
-                    "contact_number": clean_string_field(regex_parsed.get("contact_number")),
-                }
-                
-                return _filter_and_format_response(parsed, category, start_time)
-                
         except Exception as read_err:
-            print(f"[Azure Pipeline] prebuilt-read failed: {read_err}")
-            read_res = read_err
-            
-        # 2. Fallback path: wait for receipt and invoice models
-        print("[Azure Pipeline] Early return check failed. Running heavy fallback models...")
-        receipt_task = asyncio.create_task(submit_azure_model(preprocessed_bytes, "prebuilt-receipt", client))
-        invoice_task = asyncio.create_task(submit_azure_model(preprocessed_bytes, "prebuilt-invoice", client))
-        
-        receipt_res, invoice_res = await asyncio.gather(
-            receipt_task, invoice_task, return_exceptions=True
-        )
-        
-        # Check if all models failed
-        if isinstance(read_res, Exception) and isinstance(receipt_res, Exception) and isinstance(invoice_res, Exception):
             raise HTTPException(
                 status_code=502,
-                detail=f"All Azure DI models failed. Read: {read_res}, Receipt: {receipt_res}, Invoice: {invoice_res}"
+                detail=f"Azure Document Intelligence OCR failed: {str(read_err)}"
             )
-            
-        receipt_fields = {}
-        if not isinstance(receipt_res, Exception):
-            receipt_fields = get_clean_fields(extract_fields_from_document(receipt_res))
-        else:
-            print(f"[Azure Pipeline] prebuilt-receipt failed: {receipt_res}")
-            
-        invoice_fields = {}
-        if not isinstance(invoice_res, Exception):
-            invoice_fields = get_clean_fields(extract_fields_from_document(invoice_res))
-        else:
-            print(f"[Azure Pipeline] prebuilt-invoice failed: {invoice_res}")
 
-        # Resolve merged values
-        vendor = (
-            receipt_fields.get("MerchantName") or 
-            invoice_fields.get("VendorName") or 
-            regex_parsed.get("vendor") or 
-            ""
+        if not raw_text:
+            raise HTTPException(
+                status_code=502,
+                detail="Azure Document Intelligence OCR returned empty text."
+            )
+
+        # 2. Run LLM text completions on raw_text using llm_providers
+        from llm_providers import get_llm_provider
+        from smart_engine import (
+            build_pass1_prompt,
+            build_pass2_prompt,
+            build_single_pass_prompt,
+            detect_category_from_llm_response,
+            extract_and_map_fields,
+            validate_extracted_fields,
+            filter_fields_by_category,
         )
-        vendor_lower = str(vendor).lower()
-        
-        category = "Other"
-        if any(k in vendor_lower for k in ["hpcl", "iocl", "bpcl", "indian oil", "petrol", "diesel", "fuel", "nayara", "shell", "bp"]):
-            category = "Fuel"
-        elif regex_parsed.get("category") and regex_parsed.get("category") != "Other":
-            category = regex_parsed["category"]
-            
-        expense_date = (
-            receipt_fields.get("TransactionDate") or 
-            invoice_fields.get("InvoiceDate") or 
-            regex_parsed.get("expense_date")
-        )
-        if expense_date:
-            expense_date = str(expense_date)[:10]
+
+        provider = get_llm_provider()
+        print(f"[Azure+LLM Pipeline] Using provider: {provider.provider_name}")
+
+        single_pass = os.getenv("SINGLE_PASS_MODE", "true").lower().strip() == "true"
+
+        if single_pass:
+            print("[Azure+LLM Pipeline] Running in SINGLE-PASS mode...")
+            prompt = build_single_pass_prompt()
+            try:
+                response = await provider.extract_from_text(raw_text, prompt)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Azure+LLM Single-Pass extraction failed ({provider.provider_name}): {str(e)}"
+                )
+
+            if not response:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Azure+LLM Single-Pass returned empty response ({provider.provider_name})"
+                )
+
+            category = detect_category_from_llm_response(response)
+            print(f"[Azure+LLM Pipeline] Detected category: {category}")
+            merged = response
+            merged["category"] = category
         else:
-            expense_date = datetime.now().strftime("%Y-%m-%d")
-            
-        amount = (
-            receipt_fields.get("Total") or 
-            invoice_fields.get("InvoiceTotal") or 
-            invoice_fields.get("AmountDue") or 
-            regex_parsed.get("amount") or 
-            0.0
-        )
-        
-        invoice_number = (
-            invoice_fields.get("InvoiceId") or 
-            receipt_fields.get("ReceiptId") or 
-            regex_parsed.get("invoice_number")
-        )
-        taxable_amount = invoice_fields.get("SubTotal") or regex_parsed.get("taxable_amount")
-        gst_amount = invoice_fields.get("TotalTax") or regex_parsed.get("gst_amount")
-        
-        location = (
-            receipt_fields.get("MerchantAddress") or 
-            invoice_fields.get("VendorAddress") or 
-            ""
-        )
-        if location.lower().strip() in {"particulars", "sr. no.", "amount", "rate", "qty", "total", "g. total"}:
-            location = ""
-        if not location:
-            location = regex_parsed.get("location") or ""
-            
-        model_flags = []
-        if not isinstance(read_res, Exception): model_flags.append("Read")
-        if not isinstance(receipt_res, Exception): model_flags.append("Receipt")
-        if not isinstance(invoice_res, Exception): model_flags.append("Invoice")
-        models_string = "+".join(model_flags)
-        remarks = f"[Azure DI {models_string} (No LLM)]"
-        
-        parsed = {
-            "category": category,
-            "expense_date": expense_date,
-            "amount": float(amount) if amount else 0.0,
-            "liters": regex_parsed.get("liters"),
-            "rate_per_liter": regex_parsed.get("rate_per_liter"),
-            "petrol_pump": clean_string_field(vendor) if category == "Fuel" else None,
-            "vendor": clean_string_field(vendor),
-            "registration_no": clean_string_field(regex_parsed.get("registration_no") or ""),
-            "odometer": regex_parsed.get("odometer"),
-            "location": clean_string_field(location),
-            "service_type": clean_string_field(regex_parsed.get("service_type") or ""),
-            "remarks": remarks,
-            "paid": True,
-            "invoice_number": clean_string_field(invoice_number),
-            "taxable_amount": float(taxable_amount) if taxable_amount else None,
-            "non_taxable_amount": regex_parsed.get("non_taxable_amount"),
-            "gst_percentage": regex_parsed.get("gst_percentage"),
-            "gst_amount": float(gst_amount) if gst_amount else None,
-            "gst_invoicing_type": clean_string_field(regex_parsed.get("gst_invoicing_type")),
-            "paid_to": clean_string_field(regex_parsed.get("paid_to")),
-            "contact_number": clean_string_field(receipt_fields.get("MerchantPhoneNumber") or regex_parsed.get("contact_number")),
-        }
-        
-        return _filter_and_format_response(parsed, category, start_time)
+            print("[Azure+LLM Pipeline] Running in TWO-PASS mode...")
+            # Pass 1: Category detection & general extraction on raw_text
+            pass1_prompt = build_pass1_prompt()
+            try:
+                pass1_response = await provider.extract_from_text(raw_text, pass1_prompt)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Azure+LLM Pass 1 failed ({provider.provider_name}): {str(e)}"
+                )
+
+            if not pass1_response:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Azure+LLM Pass 1 returned empty response ({provider.provider_name})"
+                )
+
+            category = detect_category_from_llm_response(pass1_response)
+            print(f"[Azure+LLM Pipeline] Detected category: {category}")
+
+            # Pass 2: Category-specific extraction on raw_text
+            pass2_prompt = build_pass2_prompt(category)
+            try:
+                pass2_response = await provider.extract_from_text(raw_text, pass2_prompt)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Azure+LLM Pass 2 failed ({provider.provider_name}): {str(e)}"
+                )
+
+            if not pass2_response:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Azure+LLM Pass 2 returned empty response ({provider.provider_name})"
+                )
+
+            # Merge results
+            merged = {}
+            for key in set(list(pass1_response.keys()) + list(pass2_response.keys())):
+                val2 = pass2_response.get(key)
+                val1 = pass1_response.get(key)
+                if val2 is not None and val2 != "" and val2 != "null":
+                    merged[key] = val2
+                elif val1 is not None and val1 != "" and val1 != "null":
+                    merged[key] = val1
+
+            merged["category"] = category
+
+        # Extract & Map
+        mapped_fields = extract_and_map_fields(merged, category)
+
+        # Validate
+        validated = validate_extracted_fields(mapped_fields, category)
+
+        # Add remarks with the Azure DI Read + LLM label
+        mode_label = "Single-Pass" if single_pass else "Two-Pass"
+        validated["remarks"] = f"[Azure DI Read + LLM {mode_label}: {provider.provider_name}]"
+        # Ensure raw_text is populated in the result
+        validated["raw_text"] = raw_text
+
+        # Filter by category using smart engine filtering
+        filtered = filter_fields_by_category(validated, category)
+
+        return _filter_and_format_response(filtered, category, start_time)
+
 
 def _filter_and_format_response(parsed: dict, category: str, start_time: float) -> dict:
-    if category == "Fuel":
-        allowed_keys = {
-            "category", "expense_date", "amount", "liters", "rate_per_liter",
-            "petrol_pump", "vendor", "odometer", "registration_no", "location",
-            "remarks", "paid", "invoice_number", "contact_number"
-        }
-    elif category == "Maintenance":
-        allowed_keys = {
-            "category", "expense_date", "amount", "vendor", "registration_no",
-            "odometer", "location", "service_type", "remarks", "paid",
-            "vendor_type", "maintenance_item", "custom_maintenance_item",
-            "invoice_number", "taxable_amount", "non_taxable_amount",
-            "gst_percentage", "gst_amount", "gst_invoicing_type", "paid_to",
-            "contact_number"
-        }
-    elif category == "Vehicle":
-        allowed_keys = {
-            "category", "expense_date", "amount", "registration_no", "location",
-            "remarks", "paid", "challan_no", "challan_type", "violation_type",
-            "issued_by", "due_date", "parking_location", "km_limit", "hour_limit",
-            "excess_km_rate", "excess_hour_rate", "excess_km_amount", "excess_hour_amount",
-            "driver_allowance", "toll_charges", "parking_charges", "other_charges",
-            "gst_applicable_on_parking", "gst_applicable_on_toll",
-            "gst_applicable_on_other_charges", "gst_percentage", "gst_amount",
-            "tds_percentage", "tds_amount", "service_type", "invoice_number",
-            "contact_number", "paid_to"
-        }
-    else: # "Other"
-        allowed_keys = {
-            "category", "expense_date", "amount", "registration_no", "location",
-            "remarks", "paid", "party_type", "party", "contact", "expense_name",
-            "invoice_number", "contact_number", "paid_to"
-        }
-        
-    parsed = {k: v for k, v in parsed.items() if k in allowed_keys}
+    from main import filter_db_record_by_category
+    filtered = filter_db_record_by_category(parsed)
     latency = time.time() - start_time
     return {
         "latency_seconds": round(latency, 2),
-        "result": parsed
+        "result": filtered
     }

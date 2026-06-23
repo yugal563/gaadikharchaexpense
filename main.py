@@ -1,13 +1,12 @@
+# Trigger reload - Salary Slip amount + employee_id fix
 from fastapi import FastAPI, HTTPException, UploadFile, File, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from db import get_connection
 from fastapi.middleware.cors import CORSMiddleware
-import httpx
 import asyncio
 import re
-import base64
 import io
 from PIL import Image
 from datetime import datetime
@@ -23,7 +22,7 @@ from utils_pipeline import (
 )
 
 
-load_dotenv()
+load_dotenv(override=True)
 
 app = FastAPI(title="Vehicle Expense Tracker API")
 
@@ -95,11 +94,16 @@ class Expense(BaseModel):
     paid_to: str | None = None
     contact_number: str | None = None
 
+    model_config = {
+        "extra": "allow"
+    }
+
+
 
 # ─────────────────────────────────────────────
 #  Image Format Normalizer
 # ─────────────────────────────────────────────
-# Multimodal LLM pipeline supports: JPEG, PNG, BMP, TIFF, WebP, PDF
+# Supported formats: JPEG, PNG, BMP, TIFF, WebP, PDF
 _SUPPORTED_MIME = {"image/jpeg", "image/png", "image/bmp", "image/tiff", "image/webp", "application/pdf"}
 
 def normalize_content_type(file: UploadFile) -> str:
@@ -130,6 +134,39 @@ def convert_to_jpeg_if_needed(image_bytes: bytes, content_type: str) -> bytes:
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=95)
     return buf.getvalue()
+
+
+def run_image_quality_check(image_bytes: bytes, content_type: str) -> bytes:
+    """
+    Perform blur detection using Laplacian variance.
+    If the image is blurry, upscale it using FSRCNN to improve extraction accuracy,
+    while maintaining color/structure for Azure.
+    """
+    if content_type == "application/pdf":
+        return image_bytes
+
+    try:
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is None:
+            return image_bytes
+
+        # Convert to grayscale for blur check
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        is_blurry, var_score = check_is_blurry(gray, threshold=100.0)
+
+        if is_blurry:
+            print(f"[Pipeline] Azure input classified as blurry (variance: {var_score:.2f} < 100). Upscaling...")
+            upscaled = upscale_image_fsrcnn(img, scale=2)
+            success, encoded_img = cv2.imencode('.jpg', upscaled)
+            if success:
+                return encoded_img.tobytes()
+        else:
+            print(f"[Pipeline] Azure input is clear (variance: {var_score:.2f} >= 100). Skipping upscale.")
+    except Exception as e:
+        print(f"[Pipeline] Image quality check error: {e}. Returning original bytes.")
+
+    return image_bytes
 
 def preprocess_image_with_opencv(image_bytes: bytes, content_type: str) -> bytes:
     """
@@ -210,95 +247,6 @@ def preprocess_image_with_opencv(image_bytes: bytes, content_type: str) -> bytes
         print(f"[Pipeline] OpenCV preprocessing error: {e}. Returning original bytes.")
 
     return image_bytes
-
-
-# ─────────────────────────────────────────────
-#  Indian Receipt Validator
-# ─────────────────────────────────────────────
-_INDIAN_POSITIVE = [
-    # Currency
-    "₹", "rs.", "rs ", "inr", "rupee", "rupees",
-    # Tax / compliance
-    "gstin", "gst", "cgst", "sgst", "igst", "pan",
-    # Indian oil brands
-    "hpcl", "iocl", "bpcl", "indian oil", "bharat petroleum",
-    "hindustan petroleum", "hindustan", "nayara", "essar oil",
-    # Indian states / common city names
-    "maharashtra", "delhi", "karnataka", "gujarat", "rajasthan",
-    "uttar pradesh", "madhya pradesh", "tamil nadu", "telangana",
-    "andhra pradesh", "kerala", "punjab", "haryana", "chhattisgarh",
-    "jharkhand", "odisha", "assam", "west bengal",
-    "mumbai", "bangalore", "bengaluru", "hyderabad", "chennai",
-    "kolkata", "pune", "ahmedabad", "jaipur", "lucknow",
-    "noida", "gurugram", "gurgaon", "chandigarh", "bhopal",
-    "nagpur", "indore", "surat", "vadodara", "kochi",
-    # Common Indian receipt keywords
-    "authorised signatory", "place of supply", "state & code",
-    "e & o.e", "subject to", "service tax",
-]
-
-_FOREIGN_SIGNALS = [
-    # US currency / measurements
-    r'\$\s*\d',          # $ followed by digit
-    r'\bgallons?\b',     # gallons / gallon
-    r'\bgal\b',          # GAL
-    r'\busd\b',          # USD
-    r'\beur\b',          # EUR
-    r'\bgbp\b',          # GBP
-    # US phone format: (702) 761-7000
-    r'\(\d{3}\)\s*\d{3}[- ]\d{4}',
-    # US ZIP codes (5-digit, but guard against Indian 6-digit PINs)
-    r'\b[A-Z]{2}\s+\d{5}\b',   # e.g. NV 89019
-]
-
-def assert_indian_receipt(text: str) -> None:
-    """
-    Raise HTTP 422 if the OCR text does not look like an Indian receipt.
-    Scoring: +1 per Indian signal found, -2 per foreign signal found.
-    Tolerates blurry/handwritten receipts if zero foreign signals are found.
-    """
-    tl = text.lower()
-    
-    # Calculate foreign penalty
-    foreign_penalty = 0
-    for pat in _FOREIGN_SIGNALS:
-        if re.search(pat, tl, re.IGNORECASE):
-            foreign_penalty += 2
-            
-    # Positive signals score
-    score = sum(1 for kw in _INDIAN_POSITIVE if kw in tl)
-    
-    # Tolerant GSTIN: 15 alphanumeric characters starting with 2 digits (State Code)
-    if re.search(r'\b\d{2}[a-z0-9]{13}\b', tl):
-        score += 3
-        
-    # Tolerant Indian vehicle plate structure
-    if re.search(r'\b[a-z]{1,2}[\-\s\./]*\d{1,2}[\-\s\./]*[a-z]{1,3}[\-\s\./]*\d{1,4}\b', tl):
-        score += 3
-        
-    # Handwritten/English Rupee numbers words
-    if _rupee_words_to_amount(text):
-        score += 2
-        
-    final_score = score - foreign_penalty
-    
-    # Determine the minimum allowed threshold
-    allowed_threshold = 1
-    if foreign_penalty == 0:
-        # If there are no strong foreign indicators, and at least some numerical digits exist, 
-        # lower the threshold to 0 to prevent rejecting unclear or handwritten local receipts.
-        if re.search(r'\b\d{2,6}\b', tl):
-            allowed_threshold = 0
-
-    if final_score < allowed_threshold:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "This receipt does not appear to be from India. "
-                "Only Indian receipts (with ₹ / Rs / GST / Indian brands) are supported. "
-                "Please upload a valid Indian fuel, maintenance, or service receipt."
-            )
-        )
 
 
 # ─────────────────────────────────────────────
@@ -392,6 +340,27 @@ _COMMON_CITIES = [
     "secunderabad", "navi mumbai", "thane", "ghaziabad", "dhamtari", "raipur",
     "bilaspur", "ranchi", "patna", "kanpur", "agra", "meerut", "varanasi"
 ]
+
+def clean_invoice_number(inv_num: str, registration_no: str = None) -> str:
+    if not inv_num:
+        return ""
+    inv_str = str(inv_num).strip()
+    reg_clean = re.sub(r'[\s\-\./]', '', str(registration_no)).upper() if registration_no else ""
+    
+    parts = re.split(r'[\n\r]+', inv_str)
+    cleaned_parts = []
+    for p in parts:
+        p_clean = p.strip()
+        p_no_symbol = re.sub(r'[\s\-\./]', '', p_clean).upper()
+        if reg_clean and p_no_symbol == reg_clean:
+            continue
+        if re.match(r'^[A-Z]{2}\d{2}[A-Z]{1,3}\d{4}$', p_no_symbol):
+            continue
+        if p_clean:
+            cleaned_parts.append(p_clean)
+            
+    return "\n".join(cleaned_parts).strip()
+
 
 # ─────────────────────────────────────────────
 #  Smart Receipt Parser
@@ -935,6 +904,87 @@ def parse_receipt(text: str) -> dict:
         try: taxable_amount = float(taxable_m.group(1).replace(",", ""))
         except ValueError: pass
 
+    # ── Challan & Vehicle & Other Fields ──────
+    challan_no = None
+    ch_m = re.search(r'challan\s*(?:no\.?|num(?:ber)?|#)?[ \t]*[:\-]?[ \t]*([A-Za-z0-9\-]{5,30})\b', text, re.IGNORECASE)
+    if ch_m:
+        challan_no = ch_m.group(1).strip()
+
+    challan_type = None
+    cht_m = re.search(r'challan\s*type\s*[:\-]?\s*([^\n]{3,100})', text, re.IGNORECASE)
+    if cht_m:
+        challan_type = cht_m.group(1).strip()
+
+    violation_type = None
+    viol_m = re.search(r'(?:violation\s*type|violation|offence)\s*[:\-]?\s*([^\n]{3,100})', text, re.IGNORECASE)
+    if viol_m:
+        violation_type = viol_m.group(1).strip()
+
+    issued_by = None
+    ib_m = re.search(r'(?:issued\s*by|authority)\s*[:\-]?\s*([^\n]{3,100})', text, re.IGNORECASE)
+    if ib_m:
+        issued_by = ib_m.group(1).strip()
+
+    due_date = None
+    dd_m = re.search(r'(?:due\s*date|pay\s*by)\s*[:\-]?\s*([\d\-./]{8,10})', text, re.IGNORECASE)
+    if dd_m:
+        due_date = dd_m.group(1).strip()
+
+    parking_location = None
+    pl_m = re.search(r'(?:parking\s*location|parking\s*at|parking\s*place|parking\s*spot)\s*[:\-]?\s*([^\n]{3,100})', text, re.IGNORECASE)
+    if pl_m:
+        parking_location = pl_m.group(1).strip()
+
+    party_type = None
+    pt_m = re.search(r'(?:party\s*type)\s*[:\-]?\s*([^\n]{3,50})', text, re.IGNORECASE)
+    if pt_m:
+        party_type = pt_m.group(1).strip()
+
+    party = None
+    p_m = re.search(r'\bparty\b\s*[:\-]?\s*([^\n]{3,100})', text, re.IGNORECASE)
+    if p_m:
+        party = p_m.group(1).strip()
+
+    contact = None
+    c_m = re.search(r'\bcontact\b\s*[:\-]?\s*([^\n]{3,100})', text, re.IGNORECASE)
+    if c_m:
+        contact = c_m.group(1).strip()
+
+    expense_name = None
+    en_m = re.search(r'(?:expense\s*name)\s*[:\-]?\s*([^\n]{3,100})', text, re.IGNORECASE)
+    if en_m:
+        expense_name = en_m.group(1).strip()
+
+    toll_charges = None
+    tc_m = re.search(r'(?:toll\s*charges|toll\s*amount|toll|fastag|fastag\s*deduction)\s*[:\-]?\s*(?:rs\.?|₹)?\s*([\d,]+(?:\.\d{1,2})?)', text, re.IGNORECASE)
+    if tc_m:
+        try: toll_charges = float(tc_m.group(1).replace(",", ""))
+        except ValueError: pass
+
+    parking_charges = None
+    pc_m = re.search(r'(?:parking\s*charges|parking\s*fee|parking\s*rate|parking\s*amount)\s*[:\-]?\s*(?:rs\.?|₹)?\s*([\d,]+(?:\.\d{1,2})?)', text, re.IGNORECASE)
+    if pc_m:
+        try: parking_charges = float(pc_m.group(1).replace(",", ""))
+        except ValueError: pass
+
+    other_charges = None
+    oc_m = re.search(r'(?:other\s*charges|other\s*amount|misc\s*charges|misc\s*amount)\s*[:\-]?\s*(?:rs\.?|₹)?\s*([\d,]+(?:\.\d{1,2})?)', text, re.IGNORECASE)
+    if oc_m:
+        try: other_charges = float(oc_m.group(1).replace(",", ""))
+        except ValueError: pass
+
+    tds_percentage = None
+    tdsp_m = re.search(r'tds\s*(?:percentage|rate|%)?\s*[:\-]?\s*([\d]+(?:\.\d+)?)\s*%', text, re.IGNORECASE)
+    if tdsp_m:
+        try: tds_percentage = float(tdsp_m.group(1))
+        except ValueError: pass
+
+    tds_amount = None
+    tdsa_m = re.search(r'(?:tds\s*amount|tds\s*amt|tds)\s*[:\-]?\s*(?:rs\.?|₹)?\s*([\d,]+(?:\.\d{1,2})?)', text, re.IGNORECASE)
+    if tdsa_m:
+        try: tds_amount = float(tdsa_m.group(1).replace(",", ""))
+        except ValueError: pass
+
     # GST / Tax Amount
     tax_m = re.search(
         r'(?:cgst\s*amt|sgst\s*amt|igst\s*amt|total\s*tax|tax\s*amount|gst\s*amt|vat\s*amt|vat|gst)\s*[:\-]?\s*(?:rs\.?|₹)?\s*([\d,]+(?:\.\d{1,2})?)',
@@ -999,6 +1049,21 @@ def parse_receipt(text: str) -> dict:
         "gst_amount":      gst_amount,
         "contact_number":  contact_number,
         "raw_text":        text,
+        "challan_no":      challan_no,
+        "challan_type":    challan_type,
+        "violation_type":  violation_type,
+        "issued_by":       issued_by,
+        "due_date":        due_date,
+        "parking_location": parking_location,
+        "party_type":      party_type,
+        "party":           party,
+        "contact":         contact,
+        "expense_name":    expense_name,
+        "toll_charges":    toll_charges,
+        "parking_charges": parking_charges,
+        "other_charges":   other_charges,
+        "tds_percentage":  tds_percentage,
+        "tds_amount":      tds_amount,
     }
 
     if category == "Fuel":
@@ -1043,261 +1108,7 @@ def parse_receipt(text: str) -> dict:
 
 
 
-# ─────────────────────────────────────────────
-#  Multimodal LLM Parser Helpers
-# ─────────────────────────────────────────────
-def clean_llm_output(llm_data: dict) -> dict:
-    cleaned = {}
-    
-    # 1. Category
-    category = llm_data.get("category")
-    if category in ["Fuel", "Maintenance", "Vehicle", "Other"]:
-        cleaned["category"] = category
-    else:
-        cleaned["category"] = "Other"
 
-    # 2. Date Regex Validation
-    date = llm_data.get("expense_date")
-    if date:
-        date_str = str(date).strip()
-        if re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
-            try:
-                datetime.strptime(date_str, "%Y-%m-%d")
-                cleaned["expense_date"] = date_str
-            except ValueError:
-                cleaned["expense_date"] = datetime.now().strftime("%Y-%m-%d")
-        else:
-            cleaned["expense_date"] = datetime.now().strftime("%Y-%m-%d")
-    else:
-        cleaned["expense_date"] = datetime.now().strftime("%Y-%m-%d")
-
-    # 3. Amount Regex Validation
-    amount = llm_data.get("amount")
-    cleaned["amount"] = 0.0
-    if amount is not None:
-        amt_str = re.sub(r'[^\d\.]', '', str(amount).strip())
-        if re.match(r'^\d+(\.\d+)?$', amt_str):
-            try:
-                cleaned["amount"] = round(float(amt_str), 2)
-            except (ValueError, TypeError):
-                pass
-
-    # 4. Liters and Rate
-    cleaned["liters"] = None
-    if llm_data.get("liters") is not None:
-        try:
-            cleaned["liters"] = float(llm_data["liters"])
-        except (ValueError, TypeError):
-            pass
-
-    cleaned["rate_per_liter"] = None
-    if llm_data.get("rate_per_liter") is not None:
-        try:
-            cleaned["rate_per_liter"] = float(llm_data["rate_per_liter"])
-        except (ValueError, TypeError):
-            pass
-
-    # Math consistency check for Fuel category
-    if cleaned["category"] == "Fuel":
-        if cleaned["liters"] and cleaned["rate_per_liter"] and not cleaned["amount"]:
-            cleaned["amount"] = round(cleaned["liters"] * cleaned["rate_per_liter"], 2)
-
-    # 5. Strings normalization and truncation
-    def safe_trunc(val, limit):
-        if val is None:
-            return None
-        return str(val).strip()[:limit]
-
-    cleaned["petrol_pump"] = safe_trunc(llm_data.get("petrol_pump"), 50)
-    cleaned["vendor"] = safe_trunc(llm_data.get("vendor"), 100)
-    cleaned["service_type"] = safe_trunc(llm_data.get("service_type"), 100)
-    cleaned["location"] = safe_trunc(llm_data.get("location"), 100)
-    cleaned["vendor_type"] = safe_trunc(llm_data.get("vendor_type"), 20)
-    cleaned["parking_location"] = safe_trunc(llm_data.get("parking_location"), 100)
-    cleaned["maintenance_item"] = safe_trunc(llm_data.get("maintenance_item"), 100)
-    cleaned["custom_maintenance_item"] = safe_trunc(llm_data.get("custom_maintenance_item"), 255)
-    cleaned["invoice_number"] = safe_trunc(llm_data.get("invoice_number"), 50)
-    cleaned["paid_to"] = safe_trunc(llm_data.get("paid_to"), 255)
-
-    # GSTIN Regex Validation
-    gstin = llm_data.get("gstin")
-    cleaned_gstin = None
-    if gstin:
-        clean_gst = re.sub(r'[^A-Za-z0-9]', '', str(gstin)).upper()
-        if re.match(r'^\d{2}[A-Z]{5}\d{4}[A-Z]{1}[A-Z\d]{1}Z[A-Z\d]{1}$', clean_gst):
-            cleaned_gstin = clean_gst
-        elif len(clean_gst) == 15:
-            cleaned_gstin = clean_gst
-
-    # contact_number (Phone Number Regex Validation)
-    phone = llm_data.get("contact_number")
-    cleaned["contact_number"] = None
-    if phone:
-        clean_phone = re.sub(r'[^\d\+]', '', str(phone))
-        if re.match(r'^(?:\+91|0)?[6-9]\d{9}$', clean_phone):
-            cleaned["contact_number"] = clean_phone[:15]
-        else:
-            digits = re.sub(r'\D', '', clean_phone)
-            if len(digits) >= 10 and len(digits) <= 15:
-                cleaned["contact_number"] = clean_phone[:15]
-
-    # Odometer
-    cleaned["odometer"] = None
-    odo = llm_data.get("odometer")
-    if odo is not None:
-        try:
-            cleaned["odometer"] = int(odo)
-        except (ValueError, TypeError):
-            pass
-
-    # Registration No (Vehicle Number Regex Validation)
-    reg = llm_data.get("registration_no")
-    cleaned["registration_no"] = None
-    if reg:
-        clean_reg = re.sub(r'[^A-Za-z0-9]', '', str(reg)).upper()
-        patterns = [
-            r'^[A-Z]{2}\d{2}[A-Z]{1,3}\d{4}$', # MH12AB1234
-            r'^[A-Z]{2}\d{1}[A-Z]{1,3}\d{4}$', # MH1A1234
-            r'^[A-Z]{2}\d{2}[A-Z\d]{1,6}$',    # General/Short plates
-            r'^\d{4}$'                         # 4-digit fallback
-        ]
-        is_valid = False
-        for pat in patterns:
-            if re.match(pat, clean_reg):
-                is_valid = True
-                break
-        if is_valid:
-            cleaned["registration_no"] = clean_reg[:20]
-        elif len(clean_reg) >= 4 and len(clean_reg) <= 15:
-            cleaned["registration_no"] = clean_reg[:20]
-
-    # Floats / Numerics
-    float_fields = [
-        "taxable_amount", "non_taxable_amount", "excess_km_rate", "excess_hour_rate",
-        "excess_km_amount", "excess_hour_amount", "driver_allowance", "toll_charges",
-        "parking_charges", "other_charges", "tds_percentage", "tds_amount",
-        "gst_percentage", "gst_amount"
-    ]
-    for field in float_fields:
-        cleaned[field] = None
-        if llm_data.get(field) is not None:
-            try:
-                cleaned[field] = float(llm_data[field])
-            except (ValueError, TypeError):
-                pass
-
-    int_fields = ["km_limit", "hour_limit"]
-    for field in int_fields:
-        cleaned[field] = None
-        if llm_data.get(field) is not None:
-            try:
-                cleaned[field] = int(llm_data[field])
-            except (ValueError, TypeError):
-                pass
-
-    # Booleans
-    bool_fields = ["gst_applicable_on_parking", "gst_applicable_on_toll", "gst_applicable_on_other_charges"]
-    for field in bool_fields:
-        val = llm_data.get(field)
-        if val is not None:
-            if isinstance(val, bool):
-                cleaned[field] = val
-            elif str(val).lower() in ["true", "1", "yes"]:
-                cleaned[field] = True
-            elif str(val).lower() in ["false", "0", "no"]:
-                cleaned[field] = False
-            else:
-                cleaned[field] = None
-        else:
-            cleaned[field] = None
-
-    cleaned["gst_invoicing_type"] = safe_trunc(llm_data.get("gst_invoicing_type"), 50)
-    cleaned["paid"] = True
-
-    # Remarks
-    model_used = "Gemini" if os.getenv("GEMINI_API_KEY") else ("AzureOpenAI" if os.getenv("AZURE_OPENAI_KEY") else "GPT")
-    raw_remarks = llm_data.get("remarks") or ""
-    gstin_prefix = f"[GSTIN: {cleaned_gstin}] " if cleaned_gstin else ""
-    cleaned["remarks"] = f"[{model_used} Multimodal Scan] {gstin_prefix}{raw_remarks}".strip()[:255]
-
-    cat = cleaned.get("category", "Other")
-    if cat == "Fuel":
-        allowed_keys = {
-            "category", "expense_date", "amount", "liters", "rate_per_liter",
-            "petrol_pump", "vendor", "odometer", "registration_no", "location",
-            "remarks", "paid", "invoice_number", "contact_number"
-        }
-    elif cat == "Maintenance":
-        allowed_keys = {
-            "category", "expense_date", "amount", "vendor", "registration_no",
-            "odometer", "location", "service_type", "remarks", "paid",
-            "vendor_type", "maintenance_item", "custom_maintenance_item",
-            "invoice_number", "taxable_amount", "non_taxable_amount",
-            "gst_percentage", "gst_amount", "gst_invoicing_type", "paid_to",
-            "contact_number"
-        }
-    elif cat == "Vehicle":
-        allowed_keys = {
-            "category", "expense_date", "amount", "registration_no", "location",
-            "remarks", "paid", "challan_no", "challan_type", "violation_type",
-            "issued_by", "due_date", "parking_location", "km_limit", "hour_limit",
-            "excess_km_rate", "excess_hour_rate", "excess_km_amount", "excess_hour_amount",
-            "driver_allowance", "toll_charges", "parking_charges", "other_charges",
-            "gst_applicable_on_parking", "gst_applicable_on_toll",
-            "gst_applicable_on_other_charges", "gst_percentage", "gst_amount",
-            "tds_percentage", "tds_amount", "service_type", "invoice_number",
-            "contact_number", "paid_to"
-        }
-    else: # "Other"
-        allowed_keys = {
-            "category", "expense_date", "amount", "registration_no", "location",
-            "remarks", "paid", "party_type", "party", "contact", "expense_name",
-            "invoice_number", "contact_number", "paid_to"
-        }
-
-    cleaned = {k: v for k, v in cleaned.items() if k in allowed_keys}
-    return cleaned
-
-
-async def process_and_parse_receipt(image_bytes: bytes, content_type: str) -> tuple[str, dict]:
-    """
-    Process receipt using multimodal LLM extraction.
-    Returns a tuple of (raw_text_placeholder, parsed_receipt_dict).
-    """
-    # 1. Preprocess the image (using our new pipeline for normal images, pass-through for PDFs)
-    if content_type == "application/pdf":
-        preprocessed_bytes = image_bytes
-    else:
-        preprocessed_bytes = await asyncio.to_thread(preprocess_image_with_opencv, image_bytes, content_type)
-    
-    # Check if LLM keys are configured
-    llm_configured = bool(os.getenv("GEMINI_API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("AZURE_OPENAI_KEY"))
-    if not llm_configured:
-        raise HTTPException(
-            status_code=400,
-            detail="Multimodal LLM API keys are not configured in .env. Please set GEMINI_API_KEY, OPENAI_API_KEY, or AZURE_OPENAI_KEY."
-        )
-
-    # 2. Call the multimodal LLM
-    from utils_llm import validate_and_parse_with_llm
-    
-    try:
-        llm_parsed = await asyncio.to_thread(validate_and_parse_with_llm, preprocessed_bytes, content_type)
-    except Exception as e:
-        print(f"[Pipeline] LLM validation error: {e}")
-        raise HTTPException(
-            status_code=502,
-            detail=f"Multimodal LLM parsing error: {e}"
-        )
-
-    if not llm_parsed:
-        raise HTTPException(
-            status_code=502,
-            detail="Receipt parsing failed. Multimodal LLM was unable to analyze the document."
-        )
-
-    cleaned = clean_llm_output(llm_parsed)
-    return "[Multimodal LLM visual scan - no raw OCR text extracted]", cleaned
 
 
 # ─────────────────────────────────────────────
@@ -1347,26 +1158,145 @@ def custom_openapi():
 app.openapi = custom_openapi
 
 
-# ── Helper for concurrent processing ──────────
-async def _process_single_file(f: UploadFile):
+# ── Helper for file validation and conversion ──
+async def _read_and_validate_file(f: UploadFile) -> tuple[bytes, str]:
     content_type = normalize_content_type(f)
     allowed = {"image/jpeg", "image/png", "image/bmp", "image/tiff", "image/webp", "application/pdf"}
     if content_type not in allowed:
         raise HTTPException(status_code=400, detail=f"Unsupported file type for {f.filename}.")
     image_bytes = await f.read()
     image_bytes = convert_to_jpeg_if_needed(image_bytes, content_type)
-    return await process_and_parse_receipt(image_bytes, content_type)
+    return image_bytes, content_type
 
 
-# ── Debug: Raw OCR text (no DB save) ──────────
-@app.post("/scan-receipt-debug")
-async def scan_receipt_debug(files: list[UploadFile] = File(...)):
-    """Upload receipts → Multimodal LLM visual scan → return placeholder text + parsed fields (no DB save)."""
+
+# ── Helper for concurrent Document Intelligence processing ──────────
+async def _process_single_file_azure(f: UploadFile):
+    image_bytes, content_type = await _read_and_validate_file(f)
+    image_bytes = run_image_quality_check(image_bytes, content_type)
+    from utils_azure import process_azure_document_intelligence
+    res = await process_azure_document_intelligence(image_bytes, content_type)
+    result = res["result"]
+    result["latency_seconds"] = res["latency_seconds"]
+    return result
+
+
+
+
+# ── Save Expenses Helper ──────────────────────
+def save_expenses_to_db(parsed_list: list[dict]) -> list[int]:
+    expense_ids = []
+    conn = get_connection()
+    with conn.cursor() as cursor:
+        sql = """
+        INSERT INTO expenses
+        (
+            category, vehicle, expense_date, petrol_pump, location,
+            liters, rate_per_liter, odometer, service_type, vendor,
+            amount, paid, registration_no, challan_no, challan_type,
+            violation_type, issued_by, due_date, remarks,
+            party_type, party, contact, expense_name,
+            vendor_type, parking_location, maintenance_item, custom_maintenance_item,
+            invoice_number, taxable_amount, non_taxable_amount,
+            km_limit, hour_limit, excess_km_rate, excess_hour_rate,
+            excess_km_amount, excess_hour_amount, driver_allowance,
+            toll_charges, parking_charges, other_charges, tds_percentage,
+            tds_amount, gst_percentage, gst_amount, gst_invoicing_type,
+            gst_applicable_on_parking, gst_applicable_on_toll, gst_applicable_on_other_charges,
+            paid_to, contact_number
+        )
+        VALUES
+        (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+         %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """
+        import json
+        for parsed in parsed_list:
+            orig_category = parsed.get("category", "Other")
+            # Map dynamic/custom category to 'Other' to satisfy MySQL ENUM
+            if orig_category not in ("Fuel", "Maintenance", "Vehicle", "Other"):
+                db_category = "Other"
+                # Store the custom fields in remarks
+                custom_remarks = f"[Custom JSON]: {json.dumps(parsed)}"
+                # Save category in expense_name as fallback search key
+                expense_name_val = parsed.get("expense_name") or orig_category
+            else:
+                db_category = orig_category
+                custom_remarks = parsed.get("remarks")
+                expense_name_val = parsed.get("expense_name")
+
+            cursor.execute(sql, (
+                db_category,
+                parsed.get("vehicle")[:50] if parsed.get("vehicle") else None,
+                parsed.get("expense_date"),
+                parsed.get("petrol_pump")[:100] if parsed.get("petrol_pump") else None,
+                parsed.get("location")[:100] if parsed.get("location") else None,
+                parsed.get("liters"),
+                parsed.get("rate_per_liter"),
+                parsed.get("odometer"),
+                parsed.get("service_type")[:100] if parsed.get("service_type") else None,
+                parsed.get("vendor")[:100] if parsed.get("vendor") else None,
+                parsed.get("amount"),
+                parsed.get("paid"),
+                parsed.get("registration_no")[:20] if parsed.get("registration_no") else None,
+                parsed.get("challan_no")[:50] if parsed.get("challan_no") else None,
+                parsed.get("challan_type")[:100] if parsed.get("challan_type") else None,
+                parsed.get("violation_type")[:255] if parsed.get("violation_type") else None,
+                parsed.get("issued_by")[:100] if parsed.get("issued_by") else None,
+                parsed.get("due_date"),
+                custom_remarks,
+                parsed.get("party_type")[:100] if parsed.get("party_type") else None,
+                parsed.get("party")[:100] if parsed.get("party") else None,
+                parsed.get("contact")[:100] if parsed.get("contact") else None,
+                expense_name_val[:100] if expense_name_val else None,
+                parsed.get("vendor_type")[:20] if parsed.get("vendor_type") else None,
+                parsed.get("parking_location")[:100] if parsed.get("parking_location") else None,
+                parsed.get("maintenance_item")[:100] if parsed.get("maintenance_item") else None,
+                parsed.get("custom_maintenance_item")[:255] if parsed.get("custom_maintenance_item") else None,
+                parsed.get("invoice_number")[:50] if parsed.get("invoice_number") else None,
+                parsed.get("taxable_amount"),
+                parsed.get("non_taxable_amount"),
+                parsed.get("km_limit"),
+                parsed.get("hour_limit"),
+                parsed.get("excess_km_rate"),
+                parsed.get("excess_hour_rate"),
+                parsed.get("excess_km_amount"),
+                parsed.get("excess_hour_amount"),
+                parsed.get("driver_allowance"),
+                parsed.get("toll_charges"),
+                parsed.get("parking_charges"),
+                parsed.get("other_charges"),
+                parsed.get("tds_percentage"),
+                parsed.get("tds_amount"),
+                parsed.get("gst_percentage"),
+                parsed.get("gst_amount"),
+                parsed.get("gst_invoicing_type")[:50] if parsed.get("gst_invoicing_type") else None,
+                parsed.get("gst_applicable_on_parking"),
+                parsed.get("gst_applicable_on_toll"),
+                parsed.get("gst_applicable_on_other_charges"),
+                parsed.get("paid_to")[:255] if parsed.get("paid_to") else None,
+                parsed.get("contact_number")[:15] if parsed.get("contact_number") else None
+            ))
+            expense_ids.append(cursor.lastrowid)
+        conn.commit()
+    conn.close()
+    return expense_ids
+
+
+
+# ── Scan Receipt (Azure Document Intelligence) ──
+@app.post("/scan-receipt-azure")
+async def scan_receipt_azure(files: list[UploadFile] = File(...)):
+    """
+    Upload receipt images → Azure DI scan (Fast Early Return / Parallel Fallback) → save to MySQL → return JSON.
+    """
     try:
-        results = await asyncio.gather(*[_process_single_file(f) for f in files])
-        raw_texts = [r[0] for r in results]
-        parsed_list = [r[1] for r in results]
-        return {"raw_ocr_text": "\n\n---\n\n".join(raw_texts), "receipts": parsed_list}
+        parsed_list = await asyncio.gather(*[_process_single_file_azure(f) for f in files])
+        expense_ids = save_expenses_to_db(parsed_list)
+        return {
+            "message":     f"{len(parsed_list)} Receipt(s) scanned and saved successfully (Azure DI)!",
+            "expense_ids": expense_ids,
+            "extracted":   parsed_list,
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -1374,110 +1304,79 @@ async def scan_receipt_debug(files: list[UploadFile] = File(...)):
 
 
 
-# ── Comparison: Azure Document Intelligence Only ──
-@app.post("/scan-compare/azure")
-async def scan_compare_azure(file: UploadFile = File(...)):
-    """Upload receipt → Parse using Azure Document Intelligence only (No LLM)."""
+
+# ── Helper for LLM Vision processing ──────────
+async def _process_single_file_llm(f: UploadFile):
+    image_bytes, content_type = await _read_and_validate_file(f)
+    image_bytes = run_image_quality_check(image_bytes, content_type)
+    from utils_llm_pipeline import process_llm_extraction
+    res = await process_llm_extraction(image_bytes, content_type)
+    result = res["result"]
+    result["latency_seconds"] = res["latency_seconds"]
+    return result
+
+
+# ── Scan Receipt (LLM Vision — Two-Pass, High Accuracy) ──
+@app.post("/scan-receipt-llm")
+async def scan_receipt_llm(files: list[UploadFile] = File(...)):
+    """
+    Upload receipt images → LLM Vision extraction (two-pass) → save to MySQL → return JSON.
+    
+    Uses the LLM provider configured by LLM_PROVIDER in .env.
+    Supports: azure_openai, openai, gemini, anthropic, groq (Llama).
+    To switch models, change LLM_PROVIDER + API key in .env and restart.
+    """
     try:
-        content_type = normalize_content_type(file)
-        image_bytes = await file.read()
-        image_bytes = convert_to_jpeg_if_needed(image_bytes, content_type)
+        parsed_list = await asyncio.gather(*[_process_single_file_llm(f) for f in files])
+        expense_ids = save_expenses_to_db(parsed_list)
+        return {
+            "message":     f"{len(parsed_list)} Receipt(s) scanned and saved successfully (LLM Vision)!",
+            "expense_ids": expense_ids,
+            "extracted":   parsed_list,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
+# ── Helper for processing based on configured scanner ──
+async def _process_single_file(f: UploadFile, scanner_type: str = None):
+    if not scanner_type:
+        scanner_type = os.getenv("SCANNER_TYPE", "llm").lower().strip()
         
-        from utils_compare import process_azure_only
-        res = await process_azure_only(image_bytes, content_type)
-        return res
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    if scanner_type == "azure":
+        return await _process_single_file_azure(f)
+    else:
+        return await _process_single_file_llm(f)
 
 
-# ── Comparison: GPT-5.5 Vision Only ──────────────
-@app.post("/scan-compare/llm")
-async def scan_compare_llm(file: UploadFile = File(...)):
-    """Upload receipt → Parse using GPT-5.5 Vision only (No Azure DocIn)."""
-    try:
-        content_type = normalize_content_type(file)
-        image_bytes = await file.read()
-        image_bytes = convert_to_jpeg_if_needed(image_bytes, content_type)
-        
-        from utils_compare import process_llm_only
-        res = await process_llm_only(image_bytes, content_type)
-        return res
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ── Scan Receipt ──────────────────────────────
+# ── Scan Receipt (Unified router for UI) ────────────────
 @app.post("/scan-receipt")
 async def scan_receipt(files: list[UploadFile] = File(...)):
-    """
-    Upload receipt images → Multimodal LLM visual scan → smart parse → save to MySQL → return JSON.
-    """
     try:
-        results = await asyncio.gather(*[_process_single_file(f) for f in files])
-        parsed_list = [r[1] for r in results]
-
-        expense_ids = []
-        conn = get_connection()
-        with conn.cursor() as cursor:
-            sql = """
-            INSERT INTO expenses
-            (category, expense_date, amount, liters, rate_per_liter,
-             petrol_pump, vendor, service_type, odometer, registration_no,
-             location, remarks, paid, vendor_type, parking_location,
-             maintenance_item, custom_maintenance_item, invoice_number,
-             taxable_amount, non_taxable_amount, km_limit,
-             hour_limit, excess_km_rate, excess_hour_rate, excess_km_amount,
-             excess_hour_amount, driver_allowance, toll_charges, parking_charges,
-             other_charges, tds_percentage, tds_amount, gst_percentage,
-             gst_amount, gst_invoicing_type, gst_applicable_on_parking,
-             gst_applicable_on_toll, gst_applicable_on_other_charges, paid_to,
-             contact_number)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s)
-            """
-            for parsed in parsed_list:
-                cursor.execute(sql, (
-                    parsed.get("category"), parsed.get("expense_date"), parsed.get("amount"),
-                    parsed.get("liters"), parsed.get("rate_per_liter"), parsed.get("petrol_pump"),
-                    parsed.get("vendor"), parsed.get("service_type"), parsed.get("odometer"),
-                    parsed.get("registration_no"), parsed.get("location"), parsed.get("remarks"),
-                    parsed.get("paid"),
-                    parsed.get("vendor_type")[:20] if parsed.get("vendor_type") else None,
-                    parsed.get("parking_location")[:100] if parsed.get("parking_location") else None,
-                    parsed.get("maintenance_item")[:100] if parsed.get("maintenance_item") else None,
-                    parsed.get("custom_maintenance_item")[:255] if parsed.get("custom_maintenance_item") else None,
-                    parsed.get("invoice_number")[:50] if parsed.get("invoice_number") else None,
-                    parsed.get("taxable_amount"),
-                    parsed.get("non_taxable_amount"),
-                    parsed.get("km_limit"), parsed.get("hour_limit"), parsed.get("excess_km_rate"),
-                    parsed.get("excess_hour_rate"), parsed.get("excess_km_amount"),
-                    parsed.get("excess_hour_amount"), parsed.get("driver_allowance"),
-                    parsed.get("toll_charges"), parsed.get("parking_charges"),
-                    parsed.get("other_charges"), parsed.get("tds_percentage"),
-                    parsed.get("tds_amount"), parsed.get("gst_percentage"),
-                    parsed.get("gst_amount"),
-                    parsed.get("gst_invoicing_type")[:50] if parsed.get("gst_invoicing_type") else None,
-                    parsed.get("gst_applicable_on_parking"), parsed.get("gst_applicable_on_toll"),
-                    parsed.get("gst_applicable_on_other_charges"),
-                    parsed.get("paid_to")[:255] if parsed.get("paid_to") else None,
-                    parsed.get("contact_number")[:15] if parsed.get("contact_number") else None
-                ))
-                expense_ids.append(cursor.lastrowid)
-            conn.commit()
-        conn.close()
-
+        parsed_list = await asyncio.gather(*[_process_single_file(f) for f in files])
+        expense_ids = save_expenses_to_db(parsed_list)
         return {
             "message":     f"{len(parsed_list)} Receipt(s) scanned and saved successfully!",
             "expense_ids": expense_ids,
             "extracted":   parsed_list,
         }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/scan-receipt-debug")
+async def scan_receipt_debug(files: list[UploadFile] = File(...)):
+    try:
+        parsed_list = await asyncio.gather(*[_process_single_file(f) for f in files])
+        return {
+            "receipts": parsed_list
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -1485,6 +1384,7 @@ async def scan_receipt(files: list[UploadFile] = File(...)):
 
 
 # ── Standard CRUD ─────────────────────────────
+
 @app.post("/expenses")
 def create_expense(expense: Expense):
     try:
@@ -1511,8 +1411,25 @@ def create_expense(expense: Expense):
             (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
              %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """
+            import json
+            orig_category = expense.category
+            expense_dict = expense.model_dump()
+            if expense.model_extra:
+                expense_dict.update(expense.model_extra)
+
+            if orig_category not in ("Fuel", "Maintenance", "Vehicle", "Other"):
+                db_category = "Other"
+                # Store the custom fields in remarks
+                custom_remarks = f"[Custom JSON]: {json.dumps(expense_dict)}"
+                # Save category in expense_name as fallback search key
+                expense_name_val = expense.expense_name or orig_category
+            else:
+                db_category = orig_category
+                custom_remarks = expense.remarks
+                expense_name_val = expense.expense_name
+
             cursor.execute(sql, (
-                expense.category,
+                db_category,
                 expense.vehicle[:50] if expense.vehicle else None,
                 expense.expense_date,
                 expense.petrol_pump[:100] if expense.petrol_pump else None,
@@ -1530,11 +1447,11 @@ def create_expense(expense: Expense):
                 expense.violation_type[:255] if expense.violation_type else None,
                 expense.issued_by[:100] if expense.issued_by else None,
                 expense.due_date,
-                expense.remarks[:255] if expense.remarks else None,
+                custom_remarks,
                 expense.party_type[:100] if expense.party_type else None,
                 expense.party[:100] if expense.party else None,
                 expense.contact[:100] if expense.contact else None,
-                expense.expense_name[:100] if expense.expense_name else None,
+                expense_name_val[:100] if expense_name_val else None,
                 expense.vendor_type[:20] if expense.vendor_type else None,
                 expense.parking_location[:100] if expense.parking_location else None,
                 expense.maintenance_item[:100] if expense.maintenance_item else None,
@@ -1574,6 +1491,20 @@ def filter_db_record_by_category(record: dict) -> dict:
     if not record:
         return record
         
+    remarks = record.get("remarks")
+    if remarks and isinstance(remarks, str) and remarks.startswith("[Custom JSON]:"):
+        try:
+            import json
+            custom_data = json.loads(remarks[len("[Custom JSON]:"):].strip())
+            # Merge custom fields directly
+            record.update(custom_data)
+            # Remove the custom json prefix from remarks key
+            record["remarks"] = custom_data.get("remarks")
+            # For custom categories, we don't do standard column filtering, we return it as is
+            return record
+        except Exception:
+            pass
+
     category = record.get("category")
     
     # Common columns that apply to all categories
@@ -1603,11 +1534,15 @@ def filter_db_record_by_category(record: dict) -> dict:
             "gst_applicable_on_other_charges", "gst_percentage", "gst_amount", 
             "tds_percentage", "tds_amount", "service_type"
         }
-    else: # "Other"
+    elif category == "Other":
         category_keys = {
             "party_type", "party", "contact", "expense_name"
         }
-        
+    else:
+        # Custom category (e.g. "Salary Slip", "Hotel Bill", "Rent Receipt", …)
+        # Return all fields — don't strip custom keys like employee_name, net_pay, etc.
+        return record
+
     allowed_keys = common_keys | category_keys
     return {k: v for k, v in record.items() if k in allowed_keys}
 
@@ -1657,12 +1592,44 @@ def delete_expense(expense_id: int):
 def get_expenses_by_category(category: str):
     conn = get_connection()
     with conn.cursor() as cursor:
-        cursor.execute("SELECT * FROM expenses WHERE category = %s", (category,))
-        data = cursor.fetchall()
-        if data and not isinstance(data[0], dict):
-            columns = [col[0] for col in cursor.description]
-            data = [dict(zip(columns, row)) for row in data]
-        
-        data = [filter_db_record_by_category(row) for row in data]
+        if category not in ("Fuel", "Maintenance", "Vehicle", "Other"):
+            # Custom category is stored as 'Other' in the database
+            cursor.execute("SELECT * FROM expenses WHERE category = 'Other'")
+            data = cursor.fetchall()
+            if data and not isinstance(data[0], dict):
+                columns = [col[0] for col in cursor.description]
+                data = [dict(zip(columns, row)) for row in data]
+            
+            # Map/filter custom fields and filter by category name
+            mapped_data = []
+            for row in data:
+                mapped_row = filter_db_record_by_category(row)
+                if mapped_row.get("category") == category:
+                    mapped_data.append(mapped_row)
+            data = mapped_data
+        elif category == "Other":
+            # Return only genuine 'Other' expenses (not custom ones mapped to 'Other')
+            cursor.execute("SELECT * FROM expenses WHERE category = 'Other'")
+            data = cursor.fetchall()
+            if data and not isinstance(data[0], dict):
+                columns = [col[0] for col in cursor.description]
+                data = [dict(zip(columns, row)) for row in data]
+            
+            mapped_data = []
+            for row in data:
+                mapped_row = filter_db_record_by_category(row)
+                if mapped_row.get("category") == "Other":
+                    mapped_data.append(mapped_row)
+            data = mapped_data
+        else:
+            # Standard categories
+            cursor.execute("SELECT * FROM expenses WHERE category = %s", (category,))
+            data = cursor.fetchall()
+            if data and not isinstance(data[0], dict):
+                columns = [col[0] for col in cursor.description]
+                data = [dict(zip(columns, row)) for row in data]
+            
+            data = [filter_db_record_by_category(row) for row in data]
+            
     conn.close()
     return data
