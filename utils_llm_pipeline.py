@@ -15,14 +15,15 @@ import time
 from fastapi import HTTPException
 
 from llm_providers import get_llm_provider
-from engine.prompts import (
+from smart_engine import (
     build_pass1_prompt,
     build_pass2_prompt,
     build_single_pass_prompt,
+    detect_category_from_llm_response,
+    extract_and_map_fields,
+    validate_extracted_fields,
+    filter_fields_by_category,
 )
-from engine.category import detect_category_from_llm_response
-from engine.field_mapper import extract_and_map_fields
-from engine.validator import validate_extracted_fields, filter_fields_by_category
 
 
 async def process_llm_extraction(image_bytes: bytes, content_type: str) -> dict:
