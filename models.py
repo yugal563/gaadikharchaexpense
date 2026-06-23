@@ -1,64 +1,104 @@
 """
-models.py — Pydantic data models for the Expense Tracker API.
+models.py — Data models and validation for the Expense Tracker API.
 """
 
-from pydantic import BaseModel
+class Expense:
+    def __init__(self, data: dict):
+        # 1. Validate required fields
+        required_fields = ["category", "expense_date", "amount", "paid"]
+        for field in required_fields:
+            if field not in data or data[field] is None or data[field] == "":
+                raise ValueError(f"Missing required field: '{field}'")
+        
+        # 2. Coerce required types
+        self.category = str(data["category"]).strip()
+        self.expense_date = str(data["expense_date"]).strip()
+        
+        try:
+            self.amount = float(data["amount"])
+        except (ValueError, TypeError):
+            raise ValueError("Field 'amount' must be a valid number.")
+            
+        paid_val = data["paid"]
+        if isinstance(paid_val, str):
+            self.paid = paid_val.lower() in ("true", "1", "yes", "on")
+        else:
+            self.paid = bool(paid_val)
 
+        # 3. Optional fields definition
+        optional_fields = [
+            "vehicle", "petrol_pump", "location", "liters", "rate_per_liter",
+            "odometer", "service_type", "vendor", "registration_no", "challan_no",
+            "challan_type", "violation_type", "issued_by", "due_date", "remarks",
+            "party_type", "party", "contact", "expense_name",
+            "vendor_type", "parking_location", "maintenance_item", "custom_maintenance_item",
+            "invoice_number", "taxable_amount", "non_taxable_amount",
+            "km_limit", "hour_limit", "excess_km_rate", "excess_hour_rate",
+            "excess_km_amount", "excess_hour_amount", "driver_allowance",
+            "toll_charges", "parking_charges", "other_charges", "tds_percentage",
+            "tds_amount", "gst_percentage", "gst_amount", "gst_invoicing_type",
+            "gst_applicable_on_parking", "gst_applicable_on_toll", "gst_applicable_on_other_charges",
+            "paid_to", "contact_number"
+        ]
 
-class Expense(BaseModel):
-    category: str
-    vehicle: str | None = None
-    expense_date: str
-    petrol_pump: str | None = None
-    location: str | None = None
-    liters: float | None = None
-    rate_per_liter: float | None = None
-    odometer: int | None = None
-    service_type: str | None = None
-    vendor: str | None = None
-    amount: float
-    paid: bool
-    registration_no: str | None = None
-    challan_no: str | None = None
-    challan_type: str | None = None
-    violation_type: str | None = None
-    issued_by: str | None = None
-    due_date: str | None = None
-    remarks: str | None = None
-    party_type: str | None = None
-    party: str | None = None
-    contact: str | None = None
-    expense_name: str | None = None
+        # Populate optional fields and track extra fields
+        self.model_extra = {}
+        for key, val in data.items():
+            if key in required_fields:
+                continue
+            if key in optional_fields:
+                if val is None or val == "null" or val == "":
+                    setattr(self, key, None)
+                else:
+                    if key in ("odometer", "km_limit", "hour_limit") and val is not None:
+                        try: setattr(self, key, int(float(val)))
+                        except (ValueError, TypeError): setattr(self, key, None)
+                    elif key in ("liters", "rate_per_liter", "taxable_amount", "non_taxable_amount",
+                                 "excess_km_rate", "excess_hour_rate", "excess_km_amount", "excess_hour_amount",
+                                 "driver_allowance", "toll_charges", "parking_charges", "other_charges",
+                                 "tds_percentage", "tds_amount", "gst_percentage", "gst_amount") and val is not None:
+                        try: setattr(self, key, float(val))
+                        except (ValueError, TypeError): setattr(self, key, None)
+                    elif key in ("gst_applicable_on_parking", "gst_applicable_on_toll", "gst_applicable_on_other_charges") and val is not None:
+                        if isinstance(val, str):
+                            setattr(self, key, val.lower() in ("true", "1", "yes"))
+                        else:
+                            setattr(self, key, bool(val))
+                    else:
+                        setattr(self, key, str(val).strip())
+            else:
+                self.model_extra[key] = val
 
-    # --- Additional DB Fields ---
-    vendor_type: str | None = None
-    parking_location: str | None = None
-    maintenance_item: str | None = None
-    custom_maintenance_item: str | None = None
-    invoice_number: str | None = None
-    taxable_amount: float | None = None
-    non_taxable_amount: float | None = None
-    km_limit: int | None = None
-    hour_limit: int | None = None
-    excess_km_rate: float | None = None
-    excess_hour_rate: float | None = None
-    excess_km_amount: float | None = None
-    excess_hour_amount: float | None = None
-    driver_allowance: float | None = None
-    toll_charges: float | None = None
-    parking_charges: float | None = None
-    other_charges: float | None = None
-    tds_percentage: float | None = None
-    tds_amount: float | None = None
-    gst_percentage: float | None = None
-    gst_amount: float | None = None
-    gst_invoicing_type: str | None = None
-    gst_applicable_on_parking: bool | None = None
-    gst_applicable_on_toll: bool | None = None
-    gst_applicable_on_other_charges: bool | None = None
-    paid_to: str | None = None
-    contact_number: str | None = None
+        # Ensure all optional fields have a default None if they weren't in data
+        for field in optional_fields:
+            if not hasattr(self, field):
+                setattr(self, field, None)
 
-    model_config = {
-        "extra": "allow"
-    }
+    def model_dump(self) -> dict:
+        """Dump model fields into a dictionary for database persistence compatibility."""
+        dumped = {
+            "category": self.category,
+            "expense_date": self.expense_date,
+            "amount": self.amount,
+            "paid": self.paid
+        }
+        
+        # Add optional attributes dynamically
+        optional_fields = [
+            "vehicle", "petrol_pump", "location", "liters", "rate_per_liter",
+            "odometer", "service_type", "vendor", "registration_no", "challan_no",
+            "challan_type", "violation_type", "issued_by", "due_date", "remarks",
+            "party_type", "party", "contact", "expense_name",
+            "vendor_type", "parking_location", "maintenance_item", "custom_maintenance_item",
+            "invoice_number", "taxable_amount", "non_taxable_amount",
+            "km_limit", "hour_limit", "excess_km_rate", "excess_hour_rate",
+            "excess_km_amount", "excess_hour_amount", "driver_allowance",
+            "toll_charges", "parking_charges", "other_charges", "tds_percentage",
+            "tds_amount", "gst_percentage", "gst_amount", "gst_invoicing_type",
+            "gst_applicable_on_parking", "gst_applicable_on_toll", "gst_applicable_on_other_charges",
+            "paid_to", "contact_number"
+        ]
+        for field in optional_fields:
+            if hasattr(self, field):
+                dumped[field] = getattr(self, field)
+        return dumped

@@ -21,9 +21,10 @@ router = APIRouter()
 
 
 @router.post("/expenses")
-def create_expense(expense: Expense):
+def create_expense(payload: dict):
     """Manually create a new expense record."""
     try:
+        expense = Expense(payload)
         conn = get_connection()
         with conn.cursor() as cursor:
             sql = """
