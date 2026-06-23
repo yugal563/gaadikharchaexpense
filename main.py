@@ -1170,15 +1170,7 @@ async def _read_and_validate_file(f: UploadFile) -> tuple[bytes, str]:
 
 
 
-# ── Helper for concurrent Document Intelligence processing ──────────
-async def _process_single_file_azure(f: UploadFile):
-    image_bytes, content_type = await _read_and_validate_file(f)
-    image_bytes = run_image_quality_check(image_bytes, content_type)
-    from utils_azure import process_azure_document_intelligence
-    res = await process_azure_document_intelligence(image_bytes, content_type)
-    result = res["result"]
-    result["latency_seconds"] = res["latency_seconds"]
-    return result
+# Azure Document Intelligence helper is disabled in this branch
 
 
 
@@ -1283,24 +1275,7 @@ def save_expenses_to_db(parsed_list: list[dict]) -> list[int]:
 
 
 
-# ── Scan Receipt (Azure Document Intelligence) ──
-@app.post("/scan-receipt-azure")
-async def scan_receipt_azure(files: list[UploadFile] = File(...)):
-    """
-    Upload receipt images → Azure DI scan (Fast Early Return / Parallel Fallback) → save to MySQL → return JSON.
-    """
-    try:
-        parsed_list = await asyncio.gather(*[_process_single_file_azure(f) for f in files])
-        expense_ids = save_expenses_to_db(parsed_list)
-        return {
-            "message":     f"{len(parsed_list)} Receipt(s) scanned and saved successfully (Azure DI)!",
-            "expense_ids": expense_ids,
-            "extracted":   parsed_list,
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# Azure Document Intelligence endpoint is disabled in this branch
 
 
 
@@ -1348,7 +1323,10 @@ async def _process_single_file(f: UploadFile, scanner_type: str = None):
         scanner_type = os.getenv("SCANNER_TYPE", "llm").lower().strip()
         
     if scanner_type == "azure":
-        return await _process_single_file_azure(f)
+        raise HTTPException(
+            status_code=400,
+            detail="Azure Document Intelligence scanner is disabled in this branch."
+        )
     else:
         return await _process_single_file_llm(f)
 
