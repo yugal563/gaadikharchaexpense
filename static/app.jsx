@@ -47,7 +47,6 @@ function App() {
         remarks: "",
         party_type: "",
         party: "",
-        contact: "",
         expense_name: "",
         vendor_type: "",
         maintenance_item: "",
@@ -203,8 +202,8 @@ function App() {
             due_date: isVehicleChallan ? form.due_date || null : null,
             party_type: isVehicleOther || form.category === "Other" ? form.party_type || null : null,
             party: isVehicleOther || form.category === "Other" ? form.party || null : null,
-            contact: isVehicleOther || form.category === "Other" ? form.contact || null : null,
             expense_name: isVehicleOther || form.category === "Other" ? form.expense_name || null : null,
+            contact_number: form.contact_number || null,
             
             // Explicitly map some new fields that need float/int parsing (or rely on Pydantic)
             taxable_amount: form.taxable_amount ? parseFloat(form.taxable_amount) : null,
@@ -1193,12 +1192,12 @@ function App() {
                                             />
                                         </div>
                                         <div>
-                                            <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Contact</label>
+                                            <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Contact Number</label>
                                             <input
                                                 type="text"
-                                                name="contact"
+                                                name="contact_number"
                                                 placeholder="Phone Number"
-                                                value={form.contact}
+                                                value={form.contact_number}
                                                 onChange={handleInputChange}
                                                 className="w-full bg-slate-950 border border-slate-800/60 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-fuchsia-500"
                                             />
@@ -1880,7 +1879,7 @@ function App() {
                                                 "gst_applicable_on_other_charges", "vendor", "petrol_pump",
                                                 "liters", "rate_per_liter", "odometer", "service_type",
                                                 "challan_no", "challan_type", "violation_type", "issued_by",
-                                                "due_date", "party_type", "party", "contact", "expense_name"
+                                                "due_date", "party_type", "party", "expense_name"
                                             ];
                                             return Object.entries(selectedExpense)
                                                 .filter(([key, val]) => {

@@ -104,7 +104,7 @@ def validate_extracted_fields(fields: dict, category: str) -> dict:
     return fields
 
 
-def filter_fields_by_category(fields: dict, category: str) -> dict:
+def filter_fields_by_category(fields: dict, category: str, include_db_keys: bool = False) -> dict:
     """
     Filter extracted fields to only include those relevant to the category.
     Mirrors the filter_db_record_by_category logic in main.py.
@@ -117,6 +117,10 @@ def filter_fields_by_category(fields: dict, category: str) -> dict:
         "category", "expense_date", "amount", "paid", "remarks",
         "location", "registration_no", "contact_number", "invoice_number", "paid_to",
     }
+
+    if include_db_keys:
+        common_keys.add("expense_id")
+        common_keys.add("vehicle")
 
     category_keys = {
         "Fuel": {"liters", "rate_per_liter", "petrol_pump", "vendor", "odometer"},
@@ -134,7 +138,7 @@ def filter_fields_by_category(fields: dict, category: str) -> dict:
             "gst_applicable_on_other_charges", "gst_percentage", "gst_amount",
             "tds_percentage", "tds_amount", "service_type",
         },
-        "Other": {"party_type", "party", "contact", "expense_name"},
+        "Other": {"party_type", "party", "expense_name"},
     }
 
     allowed = common_keys | category_keys.get(category, category_keys["Other"])

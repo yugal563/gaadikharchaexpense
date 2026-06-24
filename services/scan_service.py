@@ -31,7 +31,7 @@ async def _process_single_file_llm(f: UploadFile) -> dict:
     """Preprocess one uploaded file and run the LLM Vision extraction pipeline."""
     image_bytes, content_type = await _read_and_validate_file(f)
     image_bytes = run_image_quality_check(image_bytes, content_type)
-    from utils_llm_pipeline import process_llm_extraction
+    from services.llm_pipeline import process_llm_extraction
     res = await process_llm_extraction(image_bytes, content_type)
     result = res["result"]
     result["latency_seconds"] = res["latency_seconds"]

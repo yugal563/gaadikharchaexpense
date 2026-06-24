@@ -14,7 +14,7 @@ This module connects:
 import time
 from fastapi import HTTPException
 
-from llm_providers import get_llm_provider
+from services.llm_providers import get_llm_provider
 from engine.prompts import (
     build_pass1_prompt,
     build_pass2_prompt,

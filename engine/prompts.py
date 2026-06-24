@@ -85,7 +85,6 @@ If the category is **Other**, extract:
   - "location" (string): city/location
   - "party_type" (string): vendor, customer, etc.
   - "party" (string): party name
-  - "contact" (string): contact details
   - "expense_name" (string): description of the expense
   - "invoice_number" (string): invoice/bill number
   - "contact_number" (string): phone number

@@ -13,9 +13,10 @@ import json
 
 from fastapi import APIRouter, HTTPException
 
-from db import get_connection
+from services.db import get_connection
 from models import Expense
-from services.db_service import filter_db_record_by_category
+from services.db_service import insert_expense
+from engine.validator import filter_fields_by_category
 
 router = APIRouter()
 
@@ -27,83 +28,7 @@ def create_expense(payload: dict):
         expense = Expense(payload)
         conn = get_connection()
         with conn.cursor() as cursor:
-            sql = """
-            INSERT INTO expenses
-            (
-                category, vehicle, expense_date, petrol_pump, location,
-                liters, rate_per_liter, odometer, service_type, vendor,
-                amount, paid, registration_no, challan_no, challan_type,
-                violation_type, issued_by, due_date, remarks,
-                party_type, party, contact, expense_name,
-                vendor_type, parking_location, maintenance_item, custom_maintenance_item,
-                invoice_number, taxable_amount, non_taxable_amount,
-                km_limit, hour_limit, excess_km_rate, excess_hour_rate,
-                excess_km_amount, excess_hour_amount, driver_allowance,
-                toll_charges, parking_charges, other_charges, tds_percentage,
-                tds_amount, gst_percentage, gst_amount, gst_invoicing_type,
-                gst_applicable_on_parking, gst_applicable_on_toll, gst_applicable_on_other_charges,
-                paid_to, contact_number
-            )
-            VALUES
-            (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-             %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            """
-            db_category = expense.category
-            custom_remarks = expense.remarks
-            expense_name_val = expense.expense_name
-
-            cursor.execute(sql, (
-                db_category,
-                expense.vehicle[:50] if expense.vehicle else None,
-                expense.expense_date,
-                expense.petrol_pump[:100] if expense.petrol_pump else None,
-                expense.location[:100] if expense.location else None,
-                expense.liters,
-                expense.rate_per_liter,
-                expense.odometer,
-                expense.service_type[:100] if expense.service_type else None,
-                expense.vendor[:100] if expense.vendor else None,
-                expense.amount,
-                expense.paid,
-                expense.registration_no[:20] if expense.registration_no else None,
-                expense.challan_no[:50] if expense.challan_no else None,
-                expense.challan_type[:100] if expense.challan_type else None,
-                expense.violation_type[:255] if expense.violation_type else None,
-                expense.issued_by[:100] if expense.issued_by else None,
-                expense.due_date,
-                custom_remarks,
-                expense.party_type[:100] if expense.party_type else None,
-                expense.party[:100] if expense.party else None,
-                expense.contact[:100] if expense.contact else None,
-                expense_name_val[:100] if expense_name_val else None,
-                expense.vendor_type[:20] if expense.vendor_type else None,
-                expense.parking_location[:100] if expense.parking_location else None,
-                expense.maintenance_item[:100] if expense.maintenance_item else None,
-                expense.custom_maintenance_item[:255] if expense.custom_maintenance_item else None,
-                expense.invoice_number[:50] if expense.invoice_number else None,
-                expense.taxable_amount,
-                expense.non_taxable_amount,
-                expense.km_limit,
-                expense.hour_limit,
-                expense.excess_km_rate,
-                expense.excess_hour_rate,
-                expense.excess_km_amount,
-                expense.excess_hour_amount,
-                expense.driver_allowance,
-                expense.toll_charges,
-                expense.parking_charges,
-                expense.other_charges,
-                expense.tds_percentage,
-                expense.tds_amount,
-                expense.gst_percentage,
-                expense.gst_amount,
-                expense.gst_invoicing_type[:50] if expense.gst_invoicing_type else None,
-                expense.gst_applicable_on_parking,
-                expense.gst_applicable_on_toll,
-                expense.gst_applicable_on_other_charges,
-                expense.paid_to[:255] if expense.paid_to else None,
-                expense.contact_number[:15] if expense.contact_number else None,
-            ))
+            insert_expense(cursor, expense)
             conn.commit()
         conn.close()
         return {"message": "Expense added successfully"}
@@ -121,7 +46,7 @@ def get_expenses():
         if data and not isinstance(data[0], dict):
             columns = [col[0] for col in cursor.description]
             data = [dict(zip(columns, row)) for row in data]
-        data = [filter_db_record_by_category(row) for row in data]
+        data = [filter_fields_by_category(row, row.get("category", "Other"), include_db_keys=True) for row in data]
     conn.close()
     return data
 
@@ -137,7 +62,7 @@ def get_expense(expense_id: int):
             columns = [col[0] for col in cursor.description]
             data = dict(zip(columns, data))
         if data:
-            data = filter_db_record_by_category(data)
+            data = filter_fields_by_category(data, data.get("category", "Other"), include_db_keys=True)
     conn.close()
     return data
 
@@ -167,7 +92,7 @@ def get_expenses_by_category(category: str):
                 data = [dict(zip(columns, row)) for row in data]
             mapped_data = []
             for row in data:
-                mapped_row = filter_db_record_by_category(row)
+                mapped_row = filter_fields_by_category(row, row.get("category", "Other"), include_db_keys=True)
                 if mapped_row.get("category") == category:
                     mapped_data.append(mapped_row)
             data = mapped_data
@@ -180,7 +105,7 @@ def get_expenses_by_category(category: str):
                 data = [dict(zip(columns, row)) for row in data]
             mapped_data = []
             for row in data:
-                mapped_row = filter_db_record_by_category(row)
+                mapped_row = filter_fields_by_category(row, row.get("category", "Other"), include_db_keys=True)
                 if mapped_row.get("category") == "Other":
                     mapped_data.append(mapped_row)
             data = mapped_data
@@ -190,6 +115,6 @@ def get_expenses_by_category(category: str):
             if data and not isinstance(data[0], dict):
                 columns = [col[0] for col in cursor.description]
                 data = [dict(zip(columns, row)) for row in data]
-            data = [filter_db_record_by_category(row) for row in data]
+            data = [filter_fields_by_category(row, row.get("category", "Other"), include_db_keys=True) for row in data]
     conn.close()
     return data

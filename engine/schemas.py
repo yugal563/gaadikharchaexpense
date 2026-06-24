@@ -70,7 +70,6 @@ CATEGORY_SCHEMAS = {
         "location": {"type": "string", "description": "City or location"},
         "party_type": {"type": "string", "description": "Type of party (e.g., 'Vendor', 'Customer')"},
         "party": {"type": "string", "description": "Name of the party/vendor"},
-        "contact": {"type": "string", "description": "Contact details"},
         "expense_name": {"type": "string", "description": "Name/description of the expense"},
         "invoice_number": {"type": "string", "description": "Invoice/bill number"},
         "contact_number": {"type": "string", "description": "Phone number"},

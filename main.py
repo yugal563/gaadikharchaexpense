@@ -2,17 +2,17 @@
 main.py — FastAPI application entry point.
 
 All business logic is modularized:
-    models.py                    → Pydantic models (Expense)
-    services/image_utils.py      → Image preprocessing utilities
-    services/ocr_parser.py       → Regex-based OCR receipt parser
-    services/db_service.py       → DB persistence (save_expenses_to_db, filter_db_record_by_category)
-    services/scan_service.py     → File validation + LLM scan orchestration
+    models.py                    → Custom model (Expense)
+    services/db.py               → DB connection provider (get_connection)
+    services/image_utils.py      → Image preprocessing & OpenCV CV/YOLO pipeline utilities
+    services/db_service.py       → DB persistence (insert_expense, save_expenses_to_db)
+    services/scan_service.py     → File validation + LLM scan orchestrator
+    services/llm_providers.py    → Multi-provider LLM abstraction layer
+    services/llm_pipeline.py     → LLM extraction pipeline orchestrator
     routers/static_routes.py     → GET /, GET /favicon.ico
-    routers/scan_routes.py       → POST /scan-receipt-llm, /scan-receipt, /scan-receipt-debug
+    routers/scan_routes.py       → POST /scan-receipt, /scan-receipt-debug
     routers/expense_routes.py    → POST/GET/DELETE /expenses, GET /expenses/category/{cat}
     engine/                      → Smart Modeling Engine (schemas, prompts, field mapper, validator)
-    llm_providers.py             → Multi-provider LLM abstraction layer
-    utils_llm_pipeline.py        → LLM extraction pipeline orchestrator
 """
 
 from dotenv import load_dotenv
