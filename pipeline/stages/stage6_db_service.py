@@ -1,9 +1,6 @@
 """
-services/db_service.py — Database persistence helpers.
-
-Provides:
-    - insert_expense()              — Execute the INSERT SQL statement for a single Expense object
-    - save_expenses_to_db()         — Bulk-insert parsed expense records into MySQL
+Stage 6: Database Service (Persistence)
+Handles parsing the normalized entities from Stage 5 and bulk-persisting them to MySQL database.
 """
 
 import json
@@ -119,12 +116,12 @@ def insert_expense(cursor, expense: Expense) -> int:
             expense.issued_by[:100] if expense.issued_by else None,
             expense.due_date,
             expense.parking_location[:100] if expense.parking_location else None,
-            expense.km_limit,
-            expense.hour_limit,
-            expense.excess_km_rate,
-            expense.excess_hour_rate,
-            expense.excess_km_amount,
-            expense.excess_hour_amount,
+            expense.km_limit if hasattr(expense, 'km_limit') else None,
+            expense.hour_limit if hasattr(expense, 'hour_limit') else None,
+            expense.excess_km_rate if hasattr(expense, 'excess_km_rate') else None,
+            expense.excess_hour_rate if hasattr(expense, 'excess_hour_rate') else None,
+            expense.excess_km_amount if hasattr(expense, 'excess_km_amount') else None,
+            expense.excess_hour_amount if hasattr(expense, 'excess_hour_amount') else None,
             expense.driver_allowance,
             expense.toll_charges,
             expense.parking_charges,
