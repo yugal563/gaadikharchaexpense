@@ -264,14 +264,67 @@ function App() {
         handleFileSelect(e.dataTransfer.files);
     };
 
+    const compressImage = (file, maxDim = 1600, quality = 0.85) => {
+        return new Promise((resolve) => {
+            if (file.type === "application/pdf") {
+                resolve(file);
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.createElement("canvas");
+                    let width = img.width;
+                    let height = img.height;
+
+                    if (width > maxDim || height > maxDim) {
+                        if (width > height) {
+                            height = Math.round((height * maxDim) / width);
+                            width = maxDim;
+                        } else {
+                            width = Math.round((width * maxDim) / height);
+                            height = maxDim;
+                        }
+                    }
+
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext("2d");
+                    ctx.drawImage(img, 0, 0, width, height);
+
+                    canvas.toBlob(
+                        (blob) => {
+                            const compressedFile = new File([blob], file.name.replace(/\.[^/.]+$/, "") + ".jpg", {
+                                type: "image/jpeg",
+                                lastModified: Date.now(),
+                            });
+                            resolve(compressedFile);
+                        },
+                        "image/jpeg",
+                        quality
+                    );
+                };
+                img.onerror = () => resolve(file);
+                img.src = e.target.result;
+            };
+            reader.onerror = () => resolve(file);
+            reader.readAsDataURL(file);
+        });
+    };
+
     const handleScanSubmit = async () => {
         if (scanFiles.length === 0) { showToast("Please select at least one receipt file.", "error"); return; }
         setScanLoading(true);
         setScanResult(null);
         try {
+            setScanStep("Preparing & compressing images...");
+            const compressedFiles = await Promise.all(scanFiles.map(file => compressImage(file, 1600, 0.85)));
+
             setScanStep("Uploading files...");
             const formData = new FormData();
-            scanFiles.forEach(file => formData.append("files", file));
+            compressedFiles.forEach(file => formData.append("files", file));
 
             setScanStep("Analyzing receipts visually with multimodal AI...");
             const res = await fetch("/scan-receipt", { method: "POST", body: formData });
@@ -312,9 +365,12 @@ function App() {
         setScanResult(null);
         setScanVerifyData(null);
         try {
+            setScanStep("Preparing & compressing images...");
+            const compressedFiles = await Promise.all(scanFiles.map(file => compressImage(file, 1600, 0.85)));
+
             setScanStep("Analyzing receipts visually with multimodal AI...");
             const formData = new FormData();
-            scanFiles.forEach(file => formData.append("files", file));
+            compressedFiles.forEach(file => formData.append("files", file));
             const res = await fetch("/scan-receipt-debug", { method: "POST", body: formData });
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}));
