@@ -236,7 +236,21 @@ function App() {
 
     // ── Receipt Scanner Handlers ───────────────
     const handleFileSelect = (files) => {
-        const validFiles = Array.from(files).filter(f => f.type.startsWith("image/") || f.type === "application/pdf");
+        let validFiles = Array.from(files).filter(f => f.type.startsWith("image/") || f.type === "application/pdf");
+        
+        // De-duplicate files by size (bytes) and clean names to prevent OS/Clipboard duplicates
+        const seenSizes = new Set();
+        const seenNames = new Set();
+        validFiles = validFiles.filter(file => {
+            const cleanName = file.name.replace(/\.[^/.]+$/, "").replace(/\s*\(\d+\)\s*$/, "").trim().toLowerCase();
+            if (seenSizes.has(file.size) || (cleanName && seenNames.has(cleanName))) {
+                return false;
+            }
+            if (file.size) seenSizes.add(file.size);
+            if (cleanName) seenNames.add(cleanName);
+            return true;
+        });
+
         if (validFiles.length === 0) {
             showToast("Please select valid image or PDF files.", "error");
             return;
