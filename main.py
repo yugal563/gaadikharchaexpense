@@ -27,6 +27,17 @@ from routers import expense_routes, scan_routes, static_routes
 # ─────────────────────────────────────────────
 app = FastAPI(title="Vehicle Expense Tracker API")
 
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request, exc):
+    print("[FastAPI Validation Error]:", exc.errors())
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()},
+    )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
