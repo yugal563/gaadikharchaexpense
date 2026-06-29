@@ -1,3 +1,7 @@
+"""
+Stage 5: Business Rule Validation & Filtering
+Applies robust date parsing, currency normalization, GST adjustments, and filters out non-relevant fields by category.
+"""
 import os
 import re
 from datetime import datetime

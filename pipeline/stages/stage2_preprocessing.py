@@ -1,3 +1,7 @@
+"""
+Stage 2: Image Quality check & Preprocessing
+Checks and prepares image bytes for LLM processing by downscaling large files and compressing to JPEG quality 85.
+"""
 import io
 import os
 import threading

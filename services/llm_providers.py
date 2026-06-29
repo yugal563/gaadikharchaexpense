@@ -1,15 +1,9 @@
 """
 LLM Abstraction Layer — Provider-agnostic vision model interface.
 
-Swap between models by changing LLM_PROVIDER + credentials in .env.
-No code changes needed.
-
-Supported providers:
-    azure_openai  — Azure AI Foundry / Azure OpenAI Service (any deployed model)
-    openai        — Standard OpenAI API
-    gemini        — Google Gemini (2.5 Flash / Pro)
-    anthropic     — Anthropic Claude (Sonnet, Opus)
-    groq          — Groq-hosted Llama (Scout, Maverick)
+Active Scanner Pipeline Module:
+This module handles multi-page PDF to JPEG conversions and coordinates all asynchronous LLM 
+vision API calls (Azure OpenAI, OpenAI, Gemini, Anthropic, Groq) for visual receipt data extraction.
 """
 
 import os

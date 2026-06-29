@@ -1,6 +1,11 @@
 """
 routers/scan_routes.py — Receipt scanning endpoints (LLM Vision).
 
+Active Scanner Pipeline Orchestrator:
+Coordinates the execution of Stage 1 (Validation), Stage 2 (Preprocessing), 
+Stage 3 (Extraction), Stage 4 (Mapping), and Stage 5 (Validation & Filtering) 
+for the receipt scanning process.
+
 Endpoints:
     POST /scan-receipt        → Unified scanner (routes to LLM; Azure disabled)
     POST /scan-receipt-debug  → Same as /scan-receipt but does NOT save to DB

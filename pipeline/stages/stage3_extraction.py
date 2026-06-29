@@ -1,3 +1,7 @@
+"""
+Stage 3: LLM Extraction & Categorization
+Sends the preprocessed image to the LLM Vision model to detect receipt category and extract raw fields.
+"""
 import os
 import time
 from fastapi import HTTPException

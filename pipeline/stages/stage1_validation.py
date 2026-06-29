@@ -1,3 +1,7 @@
+"""
+Stage 1: Validation
+Validates the uploaded file MIME type to ensure it is a supported image format or PDF.
+"""
 from fastapi import HTTPException, UploadFile
 from pipeline.stages.stage2_preprocessing import (
     normalize_content_type,

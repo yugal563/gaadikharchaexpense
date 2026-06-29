@@ -1,3 +1,7 @@
+"""
+Stage 4: Field Mapping
+Maps the raw JSON response from the LLM extraction into a standardized schema matching the database models.
+"""
 import re
 from datetime import datetime
 from typing import Optional
