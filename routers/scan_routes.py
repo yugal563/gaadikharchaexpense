@@ -19,7 +19,7 @@ from pipeline.stages.stage1_validation import run_stage1
 from pipeline.stages.stage2_preprocessing import run_stage2
 from pipeline.stages.stage3_extraction import run_stage3
 from pipeline.stages.stage4_mapping import run_stage4
-from pipeline.stages.stage5_validation import run_stage5
+from pipeline.stages.stage5_filtering import run_stage5
 from services.db_service import save_expenses_to_db
 
 router = APIRouter()

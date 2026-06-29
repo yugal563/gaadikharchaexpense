@@ -9,7 +9,7 @@ Provides:
 import json
 from services.db import get_connection
 from models import Expense
-from pipeline.stages.stage5_validation import filter_fields_by_category
+from pipeline.stages.stage5_filtering import filter_fields_by_category
 
 
 def insert_expense(cursor, expense: Expense) -> int:
