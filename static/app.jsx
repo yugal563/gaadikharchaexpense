@@ -708,22 +708,61 @@ function App() {
                                         )}
 
                                         <div className="grid grid-cols-2 gap-2">
-                                            {[
-                                                { label: "Category", value: scanResult.extracted?.category, icon: "fa-tag" },
-                                                { label: "Amount", value: scanResult.extracted?.amount ? `₹${Number(scanResult.extracted.amount).toLocaleString('en-IN')}` : "N/A", icon: "fa-indian-rupee-sign" },
-                                                { label: "Date", value: scanResult.extracted?.expense_date, icon: "fa-calendar" },
-                                                { label: "Vendor", value: scanResult.extracted?.vendor || scanResult.extracted?.petrol_pump || "—", icon: "fa-store" },
-                                                { label: "Liters", value: scanResult.extracted?.liters ? `${scanResult.extracted.liters} L` : "—", icon: "fa-droplet" },
-                                                { label: "Rate/L", value: scanResult.extracted?.rate_per_liter ? `₹${scanResult.extracted.rate_per_liter}` : "—", icon: "fa-coins" },
-                                            ].map(({ label, value, icon }) => (
-                                                <div key={label} className="bg-slate-900/60 rounded-lg p-2.5">
-                                                    <p className="text-[10px] text-slate-500 flex items-center gap-1">
-                                                        <i className={`fa-solid ${icon}`}></i> {label}
-                                                    </p>
-                                                    <p className="text-xs font-bold text-white mt-0.5 truncate">{value}</p>
-                                                </div>
-                                            ))}
-                                        </div>
+                                             {(() => {
+                                                 const cat = scanResult.extracted?.category || "Other";
+                                                 const ext = scanResult.extracted || {};
+                                                 
+                                                 const fields = [
+                                                     { label: "Category", value: ext.category, icon: "fa-tag" },
+                                                     { label: "Amount", value: ext.amount ? `₹${Number(ext.amount).toLocaleString('en-IN')}` : "N/A", icon: "fa-indian-rupee-sign" },
+                                                     { label: "Date", value: ext.expense_date, icon: "fa-calendar" },
+                                                 ];
+
+                                                 if (cat === "Fuel") {
+                                                     fields.push(
+                                                         { label: "Petrol Pump", value: ext.petrol_pump || ext.vendor || "—", icon: "fa-gas-pump" },
+                                                         { label: "Liters", value: ext.liters ? `${ext.liters} L` : "—", icon: "fa-droplet" },
+                                                         { label: "Rate/L", value: ext.rate_per_liter ? `₹${ext.rate_per_liter}` : "—", icon: "fa-coins" }
+                                                     );
+                                                 } else if (cat === "Maintenance") {
+                                                     fields.push(
+                                                         { label: "Workshop", value: ext.vendor || "—", icon: "fa-store" },
+                                                         { label: "Service Type", value: ext.service_type || "—", icon: "fa-screwdriver-wrench" },
+                                                         { label: "Odometer", value: ext.odometer ? `${ext.odometer.toLocaleString()} km` : "—", icon: "fa-gauge" }
+                                                     );
+                                                 } else if (cat === "Vehicle") {
+                                                     const isChallan = ext.challan_no || ext.challan_type || ext.issued_by;
+                                                     if (isChallan) {
+                                                         fields.push(
+                                                             { label: "Challan No", value: ext.challan_no || "—", icon: "fa-file-invoice" },
+                                                             { label: "Violation", value: ext.violation_type || "—", icon: "fa-triangle-exclamation" },
+                                                             { label: "Issued By", value: ext.issued_by || "—", icon: "fa-building-shield" }
+                                                         );
+                                                     } else {
+                                                         fields.push(
+                                                             { label: "Location", value: ext.location || ext.parking_location || "—", icon: "fa-location-dot" },
+                                                             { label: "Service Type", value: ext.service_type || ext.challan_type || "—", icon: "fa-circle-info" },
+                                                             { label: "Payment Mode", value: ext.payment_mode || "—", icon: "fa-credit-card" }
+                                                         );
+                                                     }
+                                                 } else {
+                                                     fields.push(
+                                                         { label: "Party/Vendor", value: ext.party || ext.vendor || "—", icon: "fa-store" },
+                                                         { label: "Expense Name", value: ext.expense_name || "—", icon: "fa-signature" },
+                                                         { label: "Payment Mode", value: ext.payment_mode || "—", icon: "fa-credit-card" }
+                                                     );
+                                                 }
+
+                                                 return fields.map(({ label, value, icon }) => (
+                                                     <div key={label} className="bg-slate-900/60 rounded-lg p-2.5">
+                                                         <p className="text-[10px] text-slate-500 flex items-center gap-1">
+                                                             <i className={`fa-solid ${icon}`}></i> {label}
+                                                         </p>
+                                                         <p className="text-xs font-bold text-white mt-0.5 truncate" title={value}>{value}</p>
+                                                     </div>
+                                                 ));
+                                             })()}
+                                         </div>
 
                                         {/* Raw OCR text expandable */}
                                         <details className="group">
