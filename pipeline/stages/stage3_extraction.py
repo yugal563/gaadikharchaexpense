@@ -66,7 +66,6 @@ If the category is **Fuel**, extract:
   - "total_amount" (number): total transaction/bill amount in INR. Defaults to amount if same.
   - "fuel_type" (string): type of fuel (e.g., Petrol, Diesel, CNG, EV)
   - "payment_mode" (string): payment mode (e.g., Cash, Card, UPI, Net Banking)
-  - "items" (array of objects): list of line items, each with "description", "quantity", "unit_price", and "total".
 
 If the category is **Maintenance**, extract:
   - "category": "Maintenance"
@@ -90,7 +89,7 @@ If the category is **Maintenance**, extract:
   - "next_service_due" (integer): odometer reading in km when next service is due
   - "work_order_number" (string): work order or job card number
   - "start_odometer_reading" (number): odometer reading at the start of service/trip
-  - "items" (array of objects): list of line items, each with "description", "quantity", "unit_price", and "total".
+  - "items" (string): comma-separated list of parts, line items, or components serviced (e.g. "Engine Oil, Brake Pads")
   - "end_odometer_reading" (number): odometer reading at the end of service/trip
 
 If the category is **Vehicle**, extract:
@@ -121,7 +120,7 @@ If the category is **Vehicle**, extract:
   - "action_type" (string): type of action/transaction description (e.g., Rent, Fine, Tax, Toll)
   - "start_odometer_reading" (number): odometer reading at the start of trip/journey
   - "end_odometer_reading" (number): odometer reading at the end of trip/journey
-  - "items" (array of objects): list of line items, each with "description", "quantity", "unit_price", and "total".
+  - "items" (string): comma-separated list of items, parts, or components purchased (e.g. "Toll Charge, Parking Fee")
   - "journey_start_datetime" (string): start date and time of journey in YYYY-MM-DD HH:MM:SS format
   - "journey_end_datetime" (string): end date and time of journey in YYYY-MM-DD HH:MM:SS format
 
@@ -139,7 +138,7 @@ If the category is **Other**, extract:
   - "paid_to" (string): payee name
   - "total_amount" (number): total transaction/bill amount in INR. Defaults to amount if same.
   - "payment_mode" (string): payment mode (e.g., Cash, Card, UPI, Net Banking)
-  - "items" (array of objects): list of line items, each with "description", "quantity", "unit_price", and "total".
+  - "items" (string): comma-separated list of items or components purchased
   - "action_type" (string): type of action/expense description
 
 **3. Output Requirements**:
