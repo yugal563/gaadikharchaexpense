@@ -1871,49 +1871,85 @@ function App() {
                                 </div>
                             )}
 
-                            {/* Dynamic Custom Fields Breakdown */}
-                            {!["Fuel", "Maintenance", "Vehicle", "Other"].includes(selectedExpense.category) && (
-                                <div className="bg-violet-950/15 p-4 border border-violet-800/20 rounded-2xl space-y-3">
-                                    <p className="text-[10px] font-bold text-violet-400 uppercase tracking-widest">
-                                        <i className="fa-solid fa-wand-magic-sparkles mr-1.5"></i>{selectedExpense.category} Details
-                                    </p>
-                                    <div className="grid grid-cols-2 gap-3 text-xs">
-                                        {(() => {
-                                            const standardKeys = [
-                                                "expense_id", "category", "vehicle", "expense_date", "amount", 
-                                                "paid", "remarks", "location", "registration_no", "contact_number", 
-                                                "invoice_number", "paid_to", "raw_text", "vendor_type",
-                                                "parking_location", "maintenance_item", "custom_maintenance_item",
-                                                "km_limit", "hour_limit", "excess_km_rate", "excess_hour_rate",
-                                                "excess_km_amount", "excess_hour_amount", "driver_allowance",
-                                                "toll_charges", "parking_charges", "other_charges", "tds_percentage",
-                                                "tds_amount", "gst_percentage", "gst_amount", "gst_invoicing_type",
-                                                "gst_applicable_on_parking", "gst_applicable_on_toll",
-                                                "gst_applicable_on_other_charges", "vendor", "petrol_pump",
-                                                "liters", "rate_per_liter", "odometer", "service_type",
-                                                "challan_no", "challan_type", "violation_type", "issued_by",
-                                                "due_date", "party_type", "party", "expense_name"
-                                            ];
-                                            return Object.entries(selectedExpense)
-                                                .filter(([key, val]) => {
-                                                    if (val === null || val === undefined || val === "") return false;
-                                                    return !standardKeys.includes(key);
-                                                })
-                                                .map(([key, val]) => {
-                                                    const humanKey = key.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-                                                    return (
-                                                        <div key={key}>
-                                                            <span className="block text-[10px] text-slate-500 uppercase">{humanKey}</span>
-                                                            <span className="font-bold text-white mt-0.5 inline-block">
-                                                                {typeof val === "boolean" ? (val ? "Yes" : "No") : val.toString()}
-                                                            </span>
-                                                        </div>
-                                                    );
-                                                });
-                                        })()}
+                            {/* Dynamic Extracted Fields Breakdown */}
+                            {(() => {
+                                const coreRenderedKeys = [
+                                    "expense_id", "category", "vehicle", "expense_date", "amount", 
+                                    "paid", "registration_no", "odometer", "location", "remarks", 
+                                    "remark", "raw_text", "scanned_image", "filename", "latency_seconds"
+                                ];
+
+                                const categoryKeys = [];
+                                if (isChallanExpense(selectedExpense)) {
+                                    categoryKeys.push("challan_no", "challan_type", "due_date", "violation_type", "issued_by");
+                                }
+                                if (selectedExpense.category === "Vehicle" && selectedExpense.service_type === "parking") {
+                                    categoryKeys.push("parking_location");
+                                }
+                                if (selectedExpense.category === "Vehicle" && selectedExpense.service_type === "other") {
+                                    categoryKeys.push("expense_name", "party_type", "party");
+                                }
+                                if (selectedExpense.category === "Fuel") {
+                                    categoryKeys.push("liters", "rate_per_liter", "petrol_pump");
+                                }
+                                if (selectedExpense.service_type || selectedExpense.vendor) {
+                                    categoryKeys.push("service_type", "vendor");
+                                }
+
+                                const excludedKeys = [...coreRenderedKeys, ...categoryKeys];
+                                
+                                const additionalFields = Object.entries(selectedExpense).filter(([key, val]) => {
+                                    if (val === null || val === undefined || val === "") return false;
+                                    return !excludedKeys.includes(key);
+                                });
+
+                                if (additionalFields.length === 0) return null;
+
+                                return (
+                                    <div className="bg-slate-900/40 p-4 border border-slate-800/60 rounded-2xl space-y-3">
+                                        <p className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">
+                                            <i className="fa-solid fa-list-check mr-1.5"></i>Additional Details
+                                        </p>
+                                        <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
+                                            {additionalFields.map(([key, val]) => {
+                                                // Format key beautifully
+                                                let displayKey = key.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+                                                if (displayKey.startsWith("Gst ")) {
+                                                    displayKey = "GST " + displayKey.slice(4);
+                                                }
+                                                if (displayKey.startsWith("Tds ")) {
+                                                    displayKey = "TDS " + displayKey.slice(4);
+                                                }
+                                                if (displayKey === "Km Limit") {
+                                                    displayKey = "KM Limit";
+                                                }
+
+                                                // Format values beautifully
+                                                let displayVal = val;
+                                                if (typeof val === "boolean") {
+                                                    displayVal = val ? "Yes" : "No";
+                                                } else if (typeof val === "number" && (key.includes("amount") || key.includes("charges") || key.includes("rate") || key.includes("allowance"))) {
+                                                    displayVal = `₹${val.toFixed(2)}`;
+                                                } else if (typeof val === "number" && (key === "odometer" || key.includes("odometer_reading") || key === "next_service_due")) {
+                                                    displayVal = `${val.toLocaleString()} km`;
+                                                } else if (typeof val === "number" && key === "liters") {
+                                                    displayVal = `${val} L`;
+                                                } else if (key.includes("date") && typeof val === "string") {
+                                                    displayVal = formatDate(val);
+                                                }
+
+                                                return (
+                                                    <div key={key} className="break-words">
+                                                        <span className="block text-[10px] text-slate-500 uppercase">{displayKey}</span>
+                                                        <span className="font-bold text-white mt-0.5 inline-block">{displayVal}</span>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
                                     </div>
-                                </div>
-                            )}
+                                );
+                            })()}
+
 
                             {/* Description / Notes Block */}
                             <div>
