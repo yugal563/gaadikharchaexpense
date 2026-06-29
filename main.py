@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.staticfiles import StaticFiles
 
-from routers import expense_routes, scan_routes, static_routes
+from routers import expense_routes, scan_routes, static_routes, async_scan_routes
 
 # ─────────────────────────────────────────────
 #  App setup
@@ -54,6 +54,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 app.include_router(static_routes.router)
 app.include_router(scan_routes.router)
 app.include_router(expense_routes.router)
+app.include_router(async_scan_routes.router)
 
 # ─────────────────────────────────────────────
 #  Swagger UI — force file upload for list[UploadFile]

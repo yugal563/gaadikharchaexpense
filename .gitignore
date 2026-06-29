@@ -7,3 +7,4 @@ __pycache__/
 
 weights/
 test_swagger.py
+azure_functions/local.settings.json
