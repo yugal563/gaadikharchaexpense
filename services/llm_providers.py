@@ -84,12 +84,12 @@ def _convert_pdf_to_images(pdf_bytes: bytes) -> list[bytes]:
     pdf = pdfium.PdfDocument(pdf_bytes)
     images = []
     for page in pdf:
-        # Render page to high-quality PIL Image
-        bitmap = page.render(scale=2.0)
+        # Render page to PIL Image
+        bitmap = page.render(scale=1.5)
         pil_img = bitmap.to_pil()
-        # Save PIL Image as JPEG bytes
+        # Save PIL Image as JPEG bytes with medium quality
         buf = io.BytesIO()
-        pil_img.save(buf, format="JPEG", quality=90)
+        pil_img.save(buf, format="JPEG", quality=80)
         images.append(buf.getvalue())
     return images
 
