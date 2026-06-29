@@ -1,13 +1,3 @@
-"""
-services/image_utils.py — Image preprocessing and format utilities.
-
-Provides:
-    - normalize_content_type()       — Normalize MIME type from filename extension
-    - convert_to_jpeg_if_needed()    — Convert unsupported formats to JPEG
-    - run_image_quality_check()      — Blur detection + FSRCNN upscaling
-    - preprocess_image_with_opencv() — Full YOLO/contour crop + CLAHE + denoise pipeline
-"""
-
 import io
 import os
 import threading
@@ -331,3 +321,11 @@ def preprocess_image_with_opencv(image_bytes: bytes, content_type: str) -> bytes
         print(f"[Pipeline] OpenCV preprocessing error: {e}. Returning original bytes.")
 
     return image_bytes
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Stage 2 Orchestrator Function
+# ──────────────────────────────────────────────────────────────────────
+def run_stage2(image_bytes: bytes, content_type: str) -> bytes:
+    """Preprocess the image bytes using image quality check (Laplacian blur variance + FSRCNN)."""
+    return run_image_quality_check(image_bytes, content_type)

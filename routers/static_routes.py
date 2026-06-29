@@ -1,22 +1,24 @@
 """
-routers/static_routes.py — Routes for serving the React frontend.
+routers/static_routes.py — Routes for serving the React frontend and static files.
 
 Endpoints:
-    GET /             → serves static/index.html
-    GET /favicon.ico  → 204 No Content
+    GET /             → serves the React app's index.html
+    GET /favicon.ico  → serves the favicon, if present in static/
+    GET /static/*     → serves other static assets (JS, CSS, etc.)
 """
 
 from fastapi import APIRouter, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
+import os
 
 router = APIRouter()
 
-
-@router.get("/")
-def home():
+# Serve the main React app
+@router.get("/", response_class=HTMLResponse)
+async def serve_react_app():
     return FileResponse("static/index.html")
 
-
-@router.get("/favicon.ico", include_in_schema=False)
-def favicon():
-    return Response(status_code=204)
+# This will serve files like favicon.ico, main.js, main.css from the static directory
+if os.path.exists("static"):
+    router.mount("/static", StaticFiles(directory="static"), name="static")

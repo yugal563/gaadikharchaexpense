@@ -701,6 +701,12 @@ function App() {
                                             <button onClick={resetScanner} className="text-[10px] text-slate-400 hover:text-white underline">Scan Another</button>
                                         </div>
 
+                                        {scanResult.extracted?.filename && (
+                                            <div className="text-[10px] text-slate-400 font-mono bg-slate-950/40 px-2.5 py-1.5 rounded-lg border border-slate-800/60 truncate">
+                                                Source File: {scanResult.extracted.filename}
+                                            </div>
+                                        )}
+
                                         <div className="grid grid-cols-2 gap-2">
                                             {[
                                                 { label: "Category", value: scanResult.extracted?.category, icon: "fa-tag" },
@@ -779,6 +785,13 @@ function App() {
                                                     <div className="absolute -top-2 -left-2 w-6 h-6 rounded-full bg-amber-600 text-white flex items-center justify-center text-xs font-bold shadow-lg border border-slate-950">
                                                         {index + 1}
                                                     </div>
+
+                                                    {/* Source Filename */}
+                                                    {data.filename && (
+                                                        <div className="text-[10px] text-slate-500 font-mono pt-1 pb-2 truncate">
+                                                            Source: {data.filename}
+                                                        </div>
+                                                    )}
 
                                                     {/* Editable fields grid */}
                                                     <div className="space-y-2 text-xs">

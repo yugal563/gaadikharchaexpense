@@ -77,6 +77,23 @@ def _image_to_data_url(image_bytes: bytes, content_type: str = "image/jpeg") -> 
     return f"data:{mime};base64,{b64}"
 
 
+def _convert_pdf_to_images(pdf_bytes: bytes) -> list[bytes]:
+    """Convert all pages of a PDF to JPEG image bytes using pypdfium2."""
+    import pypdfium2 as pdfium
+    import io
+    pdf = pdfium.PdfDocument(pdf_bytes)
+    images = []
+    for page in pdf:
+        # Render page to high-quality PIL Image
+        bitmap = page.render(scale=2.0)
+        pil_img = bitmap.to_pil()
+        # Save PIL Image as JPEG bytes
+        buf = io.BytesIO()
+        pil_img.save(buf, format="JPEG", quality=90)
+        images.append(buf.getvalue())
+    return images
+
+
 # ─────────────────────────────────────────────
 #  Abstract Base
 # ─────────────────────────────────────────────
@@ -218,7 +235,22 @@ class AzureOpenAIProvider(BaseLLMProvider):
         self, image_bytes: bytes, prompt: str, content_type: str = "image/jpeg"
     ) -> dict:
         client = _get_llm_client()
-        data_url = _image_to_data_url(image_bytes, content_type)
+
+        user_content = [{"type": "text", "text": prompt}]
+        if content_type == "application/pdf":
+            image_bytes_list = _convert_pdf_to_images(image_bytes)
+            for img_bytes in image_bytes_list:
+                data_url = _image_to_data_url(img_bytes, "image/jpeg")
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": data_url, "detail": "high"},
+                })
+        else:
+            data_url = _image_to_data_url(image_bytes, content_type)
+            user_content.append({
+                "type": "image_url",
+                "image_url": {"url": data_url, "detail": "high"},
+            })
 
         payload = {
             "messages": [
@@ -228,13 +260,7 @@ class AzureOpenAIProvider(BaseLLMProvider):
                 },
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": data_url, "detail": "high"},
-                        },
-                    ],
+                    "content": user_content,
                 },
             ],
             "max_tokens": 4096,
@@ -320,7 +346,22 @@ class OpenAIProvider(BaseLLMProvider):
         self, image_bytes: bytes, prompt: str, content_type: str = "image/jpeg"
     ) -> dict:
         client = _get_llm_client()
-        data_url = _image_to_data_url(image_bytes, content_type)
+
+        user_content = [{"type": "text", "text": prompt}]
+        if content_type == "application/pdf":
+            image_bytes_list = _convert_pdf_to_images(image_bytes)
+            for img_bytes in image_bytes_list:
+                data_url = _image_to_data_url(img_bytes, "image/jpeg")
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": data_url, "detail": "high"},
+                })
+        else:
+            data_url = _image_to_data_url(image_bytes, content_type)
+            user_content.append({
+                "type": "image_url",
+                "image_url": {"url": data_url, "detail": "high"},
+            })
 
         url = f"{self.base_url.rstrip('/')}/chat/completions"
 
@@ -338,13 +379,7 @@ class OpenAIProvider(BaseLLMProvider):
                 },
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": data_url, "detail": "high"},
-                        },
-                    ],
+                    "content": user_content,
                 },
             ],
             "max_tokens": 4096,
@@ -550,12 +585,35 @@ class AnthropicProvider(BaseLLMProvider):
         self, image_bytes: bytes, prompt: str, content_type: str = "image/jpeg"
     ) -> dict:
         client = _get_llm_client()
-        b64_image = base64.b64encode(image_bytes).decode("utf-8")
 
-        # Claude supports image/jpeg, image/png, image/gif, image/webp
-        media_type = content_type
-        if media_type not in {"image/jpeg", "image/png", "image/gif", "image/webp"}:
-            media_type = "image/jpeg"
+        user_content = []
+        if content_type == "application/pdf":
+            image_bytes_list = _convert_pdf_to_images(image_bytes)
+            for img_bytes in image_bytes_list:
+                b64_image = base64.b64encode(img_bytes).decode("utf-8")
+                user_content.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/jpeg",
+                        "data": b64_image,
+                    },
+                })
+        else:
+            b64_image = base64.b64encode(image_bytes).decode("utf-8")
+            media_type = content_type
+            if media_type not in {"image/jpeg", "image/png", "image/gif", "image/webp"}:
+                media_type = "image/jpeg"
+            user_content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": b64_image,
+                },
+            })
+
+        user_content.append({"type": "text", "text": prompt})
 
         url = "https://api.anthropic.com/v1/messages"
 
@@ -573,17 +631,7 @@ class AnthropicProvider(BaseLLMProvider):
             "messages": [
                 {
                     "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": media_type,
-                                "data": b64_image,
-                            },
-                        },
-                        {"type": "text", "text": prompt},
-                    ],
+                    "content": user_content,
                 }
             ],
         }
@@ -675,7 +723,22 @@ class GroqProvider(BaseLLMProvider):
         self, image_bytes: bytes, prompt: str, content_type: str = "image/jpeg"
     ) -> dict:
         client = _get_llm_client()
-        data_url = _image_to_data_url(image_bytes, content_type)
+
+        user_content = [{"type": "text", "text": prompt}]
+        if content_type == "application/pdf":
+            image_bytes_list = _convert_pdf_to_images(image_bytes)
+            for img_bytes in image_bytes_list:
+                data_url = _image_to_data_url(img_bytes, "image/jpeg")
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": data_url},
+                })
+        else:
+            data_url = _image_to_data_url(image_bytes, content_type)
+            user_content.append({
+                "type": "image_url",
+                "image_url": {"url": data_url},
+            })
 
         url = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -693,13 +756,7 @@ class GroqProvider(BaseLLMProvider):
                 },
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": data_url},
-                        },
-                    ],
+                    "content": user_content,
                 },
             ],
             "max_tokens": 4096,

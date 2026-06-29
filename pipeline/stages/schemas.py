@@ -1,5 +1,5 @@
 """
-engine/schemas.py — Category field schemas for the Smart Modeling Engine.
+pipeline/stages/schemas.py — Category field schemas for the Smart Modeling Engine.
 
 Each schema defines the fields to extract for a given category,
 along with their types and descriptions for LLM prompt construction.
@@ -19,6 +19,9 @@ CATEGORY_SCHEMAS = {
         "location": {"type": "string", "description": "City or location of the fuel station"},
         "invoice_number": {"type": "string", "description": "Bill/receipt/invoice number"},
         "contact_number": {"type": "string", "description": "Phone number on the receipt"},
+        "total_amount": {"type": "number", "description": "Total transaction/bill amount in INR. Defaults to amount if same."},
+        "fuel_type": {"type": "string", "description": "Type of fuel (e.g., 'Petrol', 'Diesel', 'CNG', 'EV')"},
+        "payment_mode": {"type": "string", "description": "Mode of payment (e.g., 'Cash', 'Card', 'UPI', 'Net Banking')"},
     },
     "Maintenance": {
         "category": {"type": "string", "description": "Always 'Maintenance'", "required": True},
@@ -37,6 +40,13 @@ CATEGORY_SCHEMAS = {
         "gst_invoicing_type": {"type": "string", "description": "Type of GST invoice (e.g., 'Tax Invoice', 'Bill of Supply')"},
         "paid_to": {"type": "string", "description": "Payee name (vendor/workshop name)"},
         "contact_number": {"type": "string", "description": "Phone number on the invoice"},
+        "total_amount": {"type": "number", "description": "Total transaction/bill amount in INR. Defaults to amount if same."},
+        "payment_mode": {"type": "string", "description": "Mode of payment (e.g., 'Cash', 'Card', 'UPI', 'Net Banking')"},
+        "next_service_due": {"type": "integer", "description": "Odometer/mileage reading in km when next service is due"},
+        "work_order_number": {"type": "string", "description": "Work order or job card number"},
+        "start_odometer_reading": {"type": "number", "description": "Odometer reading at the start of service/trip"},
+        "end_odometer_reading": {"type": "number", "description": "Odometer reading at the end of service/trip"},
+        "items": {"type": "string", "description": "Comma-separated list of parts, line items, or components serviced (e.g., 'Engine Oil, Brake Pads')"},
     },
     "Vehicle": {
         "category": {"type": "string", "description": "Always 'Vehicle'", "required": True},
@@ -61,6 +71,14 @@ CATEGORY_SCHEMAS = {
         "invoice_number": {"type": "string", "description": "Receipt/ticket number"},
         "contact_number": {"type": "string", "description": "Contact number"},
         "paid_to": {"type": "string", "description": "Payee name"},
+        "total_amount": {"type": "number", "description": "Total transaction/bill amount in INR. Defaults to amount if same."},
+        "payment_mode": {"type": "string", "description": "Mode of payment (e.g., 'Cash', 'Card', 'UPI', 'Net Banking')"},
+        "action_type": {"type": "string", "description": "Type of action or transaction category description (e.g., 'Rent', 'Fine', 'Tax', 'Toll')"},
+        "start_odometer_reading": {"type": "number", "description": "Odometer reading at the start of trip/journey"},
+        "end_odometer_reading": {"type": "number", "description": "Odometer reading at the end of trip/journey"},
+        "journey_start_datetime": {"type": "string", "description": "Start date and time of the journey in YYYY-MM-DD HH:MM:SS format"},
+        "journey_end_datetime": {"type": "string", "description": "End date and time of the journey in YYYY-MM-DD HH:MM:SS format"},
+        "items": {"type": "string", "description": "Comma-separated list of items, tolls, or journey components (e.g., 'Toll Plaza A, Fastag charge')"},
     },
     "Other": {
         "category": {"type": "string", "description": "Always 'Other'", "required": True},
@@ -74,5 +92,9 @@ CATEGORY_SCHEMAS = {
         "invoice_number": {"type": "string", "description": "Invoice/bill number"},
         "contact_number": {"type": "string", "description": "Phone number"},
         "paid_to": {"type": "string", "description": "Payee name"},
+        "total_amount": {"type": "number", "description": "Total transaction/bill amount in INR. Defaults to amount if same."},
+        "payment_mode": {"type": "string", "description": "Mode of payment (e.g., 'Cash', 'Card', 'UPI', 'Net Banking')"},
+        "action_type": {"type": "string", "description": "Type of action/expense description"},
+        "items": {"type": "string", "description": "Comma-separated list of items purchased or services details"},
     },
 }

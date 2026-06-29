@@ -1,13 +1,14 @@
-"""
-engine/field_mapper.py — LLM response field extraction and type mapping.
-"""
-
 import re
 from datetime import datetime
 from typing import Optional
 
-from engine.schemas import CATEGORY_SCHEMAS
-from engine.category import get_schema_for_category
+from pipeline.stages.schemas import CATEGORY_SCHEMAS
+from pipeline.stages.stage3_extraction import get_schema_for_category
+
+
+def run_stage4(raw_response: dict, category: str) -> dict:
+    """Stage 4: Extract and Map Fields to standardized schema."""
+    return extract_and_map_fields(raw_response, category)
 
 
 def extract_and_map_fields(llm_response: dict, category: str) -> dict:
@@ -21,6 +22,24 @@ def extract_and_map_fields(llm_response: dict, category: str) -> dict:
     result = {}
     for field_name, field_info in schema.items():
         raw_val = llm_response.get(field_name)
+
+        if field_name == "items" and isinstance(raw_val, list):
+            descriptions = []
+            for item in raw_val:
+                if isinstance(item, dict) and item.get("description"):
+                    desc = str(item["description"]).strip()
+                    qty = item.get("quantity")
+                    if qty:
+                        try:
+                            qty_val = int(float(qty))
+                            descriptions.append(f"{desc} (x{qty_val})")
+                        except (ValueError, TypeError):
+                            descriptions.append(desc)
+                    else:
+                        descriptions.append(desc)
+                elif isinstance(item, str):
+                    descriptions.append(item.strip())
+            raw_val = ", ".join(descriptions) if descriptions else None
 
         if raw_val is None or raw_val == "" or raw_val == "null":
             result[field_name] = None
