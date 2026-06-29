@@ -146,6 +146,7 @@ If the category is **Other**, extract:
 - Dates must be in YYYY-MM-DD format (use Indian DD/MM/YYYY rules for parsing).
 - Datetimes must be in YYYY-MM-DD HH:MM:SS format if present.
 - Currency must be in INR.
+- Automatically correct obvious handwriting spelling errors, typos, or local phonetics in extracted text to standard English terms (e.g., correct "balab" to "Bulb", "wayring" to "Wiring", "butten" to "Button", "hadlight" to "Headlight", "pip" to "Pipe").
 - Do not include markdown fences, comments, or extra text.
 """
 
