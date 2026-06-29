@@ -334,8 +334,10 @@ def run_stage2(image_bytes: bytes, content_type: str) -> bytes:
     """
     Preprocess the image bytes:
     1. Decode the image.
-    2. Resize if the maximum dimension exceeds 1600 pixels.
-    3. Re-encode as JPEG with quality 85 to reduce network payload.
+    2. Check if the image is blurry (Laplacian variance < 70.0).
+    3. If blurry, run FSRCNN upscaling/enhancement.
+    4. If clear, downscale to max_dim = 1600.
+    5. Re-encode as JPEG with quality 85.
     """
     if content_type == "application/pdf":
         return image_bytes
@@ -346,19 +348,28 @@ def run_stage2(image_bytes: bytes, content_type: str) -> bytes:
         if img is None:
             return image_bytes
 
-        # Downscale large images to speed up preprocessing and reduce network payload
-        max_dim = 1600
-        h, w = img.shape[:2]
-        if max(h, w) > max_dim:
-            scale = max_dim / max(h, w)
-            img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+        # Grayscale conversion for blur check
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        is_blurry, var_score = check_is_blurry(gray, threshold=70.0)
+
+        if is_blurry:
+            print(f"[Pipeline] Blurry image detected (variance: {var_score:.2f} < 70.0). Running FSRCNN enhancement...")
+            img = upscale_image_fsrcnn(img, scale=2)
+        else:
+            print(f"[Pipeline] Image is clear (variance: {var_score:.2f} >= 70.0). Bypassing enhancement.")
+            # Downscale large clear images to keep payload lightweight
+            max_dim = 1600
+            h, w = img.shape[:2]
+            if max(h, w) > max_dim:
+                scale = max_dim / max(h, w)
+                img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
 
         # Encode back to JPEG with quality 85
         success, encoded_img = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
         if success:
             return encoded_img.tobytes()
     except Exception as e:
-        print(f"[Pipeline] Fast preprocessing error: {e}. Returning original bytes.")
+        print(f"[Pipeline] Preprocessing error: {e}. Returning original bytes.")
 
     return image_bytes
 
