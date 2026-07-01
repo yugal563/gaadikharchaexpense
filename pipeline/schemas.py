@@ -98,3 +98,19 @@ CATEGORY_SCHEMAS = {
         "items": {"type": "string", "description": "Comma-separated list of items purchased or services details"},
     },
 }
+
+
+def detect_category_from_llm_response(llm_response: dict) -> str:
+    category = llm_response.get("category", "Other")
+    cat_lower = str(category).lower().strip()
+    if cat_lower in ("fuel", "petrol", "diesel", "gas"):
+        return "Fuel"
+    if cat_lower in ("maintenance", "repair", "service", "workshop"):
+        return "Maintenance"
+    if cat_lower in ("vehicle", "challan", "toll", "parking", "traffic"):
+        return "Vehicle"
+    return "Other"
+
+
+def get_schema_for_category(category: str) -> dict:
+    return CATEGORY_SCHEMAS.get(category, CATEGORY_SCHEMAS["Other"])

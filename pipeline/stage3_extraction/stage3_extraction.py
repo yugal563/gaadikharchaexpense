@@ -1,53 +1,15 @@
 import json
-import os
-import sys
 import logging
+import os
 import time
-from fastapi import HTTPException
+
 import azure.functions as func
-import httpx
-import pymysql
-from azure.servicebus import ServiceBusClient, ServiceBusMessage
-from azure.storage.blob import BlobServiceClient
 
-# Add wwwroot to path so services can be imported correctly
-sys.path.append("/home/site/wwwroot")
-
+from pipeline.schemas import CATEGORY_SCHEMAS, detect_category_from_llm_response
+from services.blob_service import download_blob, upload_json_artifact
 from services.llm_providers import get_llm_provider
-try:
-    from .schemas import CATEGORY_SCHEMAS
-except ImportError:
-    from schemas import CATEGORY_SCHEMAS
-
-# ──────────────────────────────────────────────────────────────────────
-#  Category Detection & Schema Helper
-# ──────────────────────────────────────────────────────────────────────
-def detect_category_from_llm_response(llm_response: dict) -> str:
-    """
-    Determine the expense category from the LLM's initial extraction response.
-    Uses the LLM's own classification plus keyword-based verification.
-    """
-    category = llm_response.get("category", "Other")
-    cat_lower = str(category).lower().strip()
-
-    if cat_lower in ("fuel", "petrol", "diesel", "gas"):
-        return "Fuel"
-    if cat_lower in ("maintenance", "repair", "service", "workshop"):
-        return "Maintenance"
-    if cat_lower in ("vehicle", "challan", "toll", "parking", "traffic"):
-        return "Vehicle"
-
-    return "Other"
-
-
-def get_schema_for_category(category: str) -> dict:
-    """Return the field schema for the given expense category."""
-    return CATEGORY_SCHEMAS.get(category, CATEGORY_SCHEMAS["Other"])
-
-
-# ──────────────────────────────────────────────────────────────────────
-#  LLM Prompt Builders
-# ──────────────────────────────────────────────────────────────────────
+from services.queue_service import forward_to_stage
+from services.stage_tracking import update_stage_tracking
 def build_single_pass_prompt() -> str:
     """Build a single-pass extraction prompt containing schemas for all categories."""
     return """You are analyzing an Indian financial document (receipt, invoice, bill, or statement).
@@ -299,15 +261,13 @@ async def run_stage3(image_bytes: bytes, content_type: str) -> dict:
                 image_bytes, prompt, content_type
             )
         except Exception as e:
-            raise HTTPException(
-                status_code=502,
-                detail=f"LLM Single-Pass extraction failed ({provider.provider_name}): {str(e)}"
+            raise RuntimeError(
+                f"LLM Single-Pass extraction failed ({provider.provider_name}): {str(e)}"
             )
 
         if not response:
-            raise HTTPException(
-                status_code=502,
-                detail=f"LLM Single-Pass returned empty response ({provider.provider_name})"
+            raise RuntimeError(
+                f"LLM Single-Pass returned empty response ({provider.provider_name})"
             )
 
         category = detect_category_from_llm_response(response)
@@ -324,15 +284,13 @@ async def run_stage3(image_bytes: bytes, content_type: str) -> dict:
                 image_bytes, pass1_prompt, content_type
             )
         except Exception as e:
-            raise HTTPException(
-                status_code=502,
-                detail=f"LLM Pass 1 failed ({provider.provider_name}): {str(e)}"
+            raise RuntimeError(
+                f"LLM Pass 1 failed ({provider.provider_name}): {str(e)}"
             )
 
         if not pass1_response:
-            raise HTTPException(
-                status_code=502,
-                detail=f"LLM Pass 1 returned empty response ({provider.provider_name})"
+            raise RuntimeError(
+                f"LLM Pass 1 returned empty response ({provider.provider_name})"
             )
 
         category = detect_category_from_llm_response(pass1_response)
@@ -346,15 +304,13 @@ async def run_stage3(image_bytes: bytes, content_type: str) -> dict:
                 image_bytes, pass2_prompt, content_type
             )
         except Exception as e:
-            raise HTTPException(
-                status_code=502,
-                detail=f"LLM Pass 2 failed ({provider.provider_name}): {str(e)}"
+            raise RuntimeError(
+                f"LLM Pass 2 failed ({provider.provider_name}): {str(e)}"
             )
 
         if not pass2_response:
-            raise HTTPException(
-                status_code=502,
-                detail=f"LLM Pass 2 returned empty response ({provider.provider_name})"
+            raise RuntimeError(
+                f"LLM Pass 2 returned empty response ({provider.provider_name})"
             )
 
         merged = pass2_response
@@ -371,121 +327,18 @@ async def run_stage3(image_bytes: bytes, content_type: str) -> dict:
 app = func.FunctionApp()
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────
-#  Helpers
-# ─────────────────────────────────────────────────────────
-def _get_db_conn():
-    return pymysql.connect(
-        host=os.environ.get("DB_HOST", "127.0.0.1"),
-        port=int(os.environ.get("DB_PORT", 3306)),
-        user=os.environ.get("DB_USER", "root"),
-        password=os.environ.get("DB_PASSWORD", "1234"),
-        database=os.environ.get("DB_NAME", "expenses"),
-        cursorclass=pymysql.cursors.DictCursor
-    )
 
-def _update_stage_tracking(job_id: str, filename: str = None, status: str = None, 
-                           current_stage: str = None, original_url: str = None, 
-                           preprocessed_url: str = None, category: str = None, 
-                           expense_row_id: int = None, error_message: str = None, 
-                           completed_stage_num: int = None):
-    try:
-        conn = _get_db_conn()
-        with conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT 1 FROM stage_tracking WHERE job_id = %s", (job_id,))
-                exists = cursor.fetchone()
-                
-                if not exists:
-                    sql = """
-                    INSERT INTO stage_tracking (job_id, filename, status, current_stage, original_url)
-                    VALUES (%s, %s, %s, %s, %s)
-                    """
-                    cursor.execute(sql, (job_id, filename or "unknown", status or "queued", 
-                                         current_stage or "stage3_extract", original_url))
-                else:
-                    updates = []
-                    params = []
-                    
-                    if status:
-                        updates.append("status = %s")
-                        params.append(status)
-                    if current_stage:
-                        updates.append("current_stage = %s")
-                        params.append(current_stage)
-                    if original_url:
-                        updates.append("original_url = %s")
-                        params.append(original_url)
-                    if preprocessed_url:
-                        updates.append("preprocessed_url = %s")
-                        params.append(preprocessed_url)
-                    if category:
-                        updates.append("category = %s")
-                        params.append(category)
-                    if expense_row_id is not None:
-                        updates.append("expense_row_id = %s")
-                        params.append(expense_row_id)
-                    if error_message:
-                        updates.append("error_message = %s")
-                        params.append(error_message)
-                    if completed_stage_num:
-                        updates.append(f"stage{completed_stage_num}_completed_at = CURRENT_TIMESTAMP")
-                        
-                    if updates:
-                        sql = f"UPDATE stage_tracking SET {', '.join(updates)} WHERE job_id = %s"
-                        params.append(job_id)
-                        cursor.execute(sql, tuple(params))
-            conn.commit()
-    except Exception as e:
-        logger.error(f"[Tracking Error] Failed to update stage_tracking for job {job_id}: {e}")
-
-def _send_callback(job_id: str, status: str, detail: str = None):
-    base_url = os.environ.get("FASTAPI_BASE_URL", "http://localhost:8000")
-    url = f"{base_url}/job-status/{job_id}"
-    payload = {"status": status}
-    if detail:
-        payload["detail"] = detail
-    try:
-        httpx.post(url, json=payload, timeout=5)
-    except Exception as e:
-        logger.error(f"[Callback Error] Failed to send status to {url}: {e}")
-
-def _forward_to_next_stage(stage_num: int, payload: dict):
-    conn_str = os.environ.get("AZURE_SERVICEBUS_CONNECTION_STRING")
-    queue_name = os.environ.get(f"AZURE_QUEUE_STAGE{stage_num}", f"receipt-stage{stage_num}")
-    client = ServiceBusClient.from_connection_string(conn_str)
-    with client:
-        with client.get_queue_sender(queue_name) as sender:
-            msg = ServiceBusMessage(json.dumps(payload, default=str))
-            sender.send_messages(msg)
-
-def _download_blob(blob_url: str) -> bytes:
-    conn_str = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
-    client = BlobServiceClient.from_connection_string(conn_str)
-    
-    parts = blob_url.split(".blob.core.windows.net/")
-    if len(parts) < 2:
-        raise ValueError(f"Invalid blob URL: {blob_url}")
-    rest = parts[1]
-    container, _, blob_path = rest.partition("/")
-    blob_c = client.get_blob_client(container=container, blob=blob_path)
-    return blob_c.download_blob().readall()
-
-
-# ─────────────────────────────────────────────────────────
-#  Service Bus Queue Trigger
-# ─────────────────────────────────────────────────────────
 @app.service_bus_queue_trigger(
     arg_name="msg",
     queue_name="%AZURE_QUEUE_STAGE3%",
-    connection="ServiceBusConnection"
+    connection="ServiceBusConnection",
 )
 async def stage3_extract(msg: func.ServiceBusMessage):
-    body = msg.get_body().decode('utf-8')
+    body = msg.get_body().decode("utf-8")
     try:
         payload = json.loads(body)
     except Exception as e:
-        logger.error(f"[Stage3] Failed to parse message body JSON: {e}")
+        logger.error("[Stage3] Failed to parse message body JSON: %s", e)
         return
 
     job_id = payload.get("job_id")
@@ -494,50 +347,54 @@ async def stage3_extract(msg: func.ServiceBusMessage):
     content_type = payload.get("content_type")
 
     if not job_id or not blob_url:
-        logger.error(f"[Stage3] Missing job_id or blob_url in payload: {payload}")
+        logger.error("[Stage3] Missing job_id or blob_url in payload: %s", payload)
         return
 
-    logger.info(f"[Stage3] Starting LLM vision extraction for job={job_id}")
+    logger.info("[Stage3] Starting LLM vision extraction for job=%s", job_id)
 
     try:
-        # 1. Update status to stage_3
-        _update_stage_tracking(
+        update_stage_tracking(
             job_id=job_id,
             status="stage_3",
-            current_stage="stage3_extract"
+            current_stage="stage3_extract",
+            default_current_stage="stage3_extract",
         )
-        _send_callback(job_id, "stage_3")
 
-        # 2. Download preprocessed image bytes
-        image_bytes = _download_blob(blob_url)
-
-        # 3. Call LLM extraction logic
+        image_bytes = download_blob(blob_url)
         result = await run_stage3(image_bytes, content_type)
         raw_response = result["raw_response"]
         category = result["category"]
 
-        # 4. Update tracking with category
-        _update_stage_tracking(
-            job_id=job_id,
-            category=category,
-            completed_stage_num=3
+        artifact_url = upload_json_artifact(
+            job_id,
+            3,
+            "extraction.json",
+            {"category": category, "raw_response": raw_response},
         )
 
-        # 5. Forward to Stage 4
-        next_payload = {
-            "job_id": job_id,
-            "blob_url": blob_url,
-            "filename": filename,
-            "content_type": content_type,
-            "category": category,
-            "raw_response": raw_response
-        }
-        _forward_to_next_stage(4, next_payload)
-        _send_callback(job_id, "stage_4")
-        logger.info(f"[Stage3] Completed successfully for job={job_id} detected_category={category}")
+        update_stage_tracking(
+            job_id=job_id,
+            category=category,
+            completed_stage_num=3,
+        )
+
+        forward_to_stage(
+            4,
+            {
+                "job_id": job_id,
+                "filename": filename,
+                "content_type": content_type,
+                "category": category,
+                "artifact_url": artifact_url,
+            },
+        )
+        logger.info(
+            "[Stage3] Completed successfully for job=%s detected_category=%s",
+            job_id,
+            category,
+        )
 
     except Exception as e:
         error_msg = f"Stage 3 failed: {str(e)}"
-        logger.error(f"[Stage3] {error_msg}")
-        _update_stage_tracking(job_id=job_id, status="failed", error_message=error_msg)
-        _send_callback(job_id, "failed", error_msg)
+        logger.error("[Stage3] %s", error_msg)
+        update_stage_tracking(job_id=job_id, status="failed", error_message=error_msg)

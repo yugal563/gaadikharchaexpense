@@ -1,17 +1,12 @@
 import json
-import os
-import sys
 import logging
+
 import azure.functions as func
-import httpx
-import pymysql
 
-# Add wwwroot to path so relative imports like models.py, services.db work
-sys.path.append("/home/site/wwwroot")
-
+from models import Expense, encode_expense_id
+from services.blob_service import download_json_artifact, upload_json_artifact
 from services.db import get_connection
-from models import Expense
-from pipeline.stage5_filtering.stage5_filtering import filter_fields_by_category
+from services.stage_tracking import update_stage_tracking
 
 
 def insert_expense(cursor, expense: Expense) -> int:
@@ -199,7 +194,6 @@ def insert_expense(cursor, expense: Expense) -> int:
 def save_expenses_to_db(parsed_list: list[dict]) -> list[int]:
     """Insert a list of parsed expense dicts into their category tables. Returns inserted encoded IDs."""
     expense_ids = []
-    from models import encode_expense_id
     conn = get_connection()
     with conn.cursor() as cursor:
         for parsed in parsed_list:
@@ -222,142 +216,65 @@ def save_expenses_to_db(parsed_list: list[dict]) -> list[int]:
 app = func.FunctionApp()
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────
-#  Helpers
-# ─────────────────────────────────────────────────────────
-def _get_db_conn():
-    return pymysql.connect(
-        host=os.environ.get("DB_HOST", "127.0.0.1"),
-        port=int(os.environ.get("DB_PORT", 3306)),
-        user=os.environ.get("DB_USER", "root"),
-        password=os.environ.get("DB_PASSWORD", "1234"),
-        database=os.environ.get("DB_NAME", "expenses"),
-        cursorclass=pymysql.cursors.DictCursor
-    )
 
-def _update_stage_tracking(job_id: str, filename: str = None, status: str = None, 
-                           current_stage: str = None, original_url: str = None, 
-                           preprocessed_url: str = None, category: str = None, 
-                           expense_row_id: int = None, error_message: str = None, 
-                           completed_stage_num: int = None):
-    try:
-        conn = _get_db_conn()
-        with conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT 1 FROM stage_tracking WHERE job_id = %s", (job_id,))
-                exists = cursor.fetchone()
-                
-                if not exists:
-                    sql = """
-                    INSERT INTO stage_tracking (job_id, filename, status, current_stage, original_url)
-                    VALUES (%s, %s, %s, %s, %s)
-                    """
-                    cursor.execute(sql, (job_id, filename or "unknown", status or "queued", 
-                                         current_stage or "stage6_persist", original_url))
-                else:
-                    updates = []
-                    params = []
-                    
-                    if status:
-                        updates.append("status = %s")
-                        params.append(status)
-                    if current_stage:
-                        updates.append("current_stage = %s")
-                        params.append(current_stage)
-                    if original_url:
-                        updates.append("original_url = %s")
-                        params.append(original_url)
-                    if preprocessed_url:
-                        updates.append("preprocessed_url = %s")
-                        params.append(preprocessed_url)
-                    if category:
-                        updates.append("category = %s")
-                        params.append(category)
-                    if expense_row_id is not None:
-                        updates.append("expense_row_id = %s")
-                        params.append(expense_row_id)
-                    if error_message:
-                        updates.append("error_message = %s")
-                        params.append(error_message)
-                    if completed_stage_num:
-                        updates.append(f"stage{completed_stage_num}_completed_at = CURRENT_TIMESTAMP")
-                        
-                    if updates:
-                        sql = f"UPDATE stage_tracking SET {', '.join(updates)} WHERE job_id = %s"
-                        params.append(job_id)
-                        cursor.execute(sql, tuple(params))
-            conn.commit()
-    except Exception as e:
-        logger.error(f"[Tracking Error] Failed to update stage_tracking for job {job_id}: {e}")
-
-def _send_callback(job_id: str, status: str, detail: str = None):
-    base_url = os.environ.get("FASTAPI_BASE_URL", "http://localhost:8000")
-    url = f"{base_url}/job-status/{job_id}"
-    payload = {"status": status}
-    if detail:
-        payload["detail"] = detail
-    try:
-        httpx.post(url, json=payload, timeout=5)
-    except Exception as e:
-        logger.error(f"[Callback Error] Failed to send status to {url}: {e}")
-
-
-# ─────────────────────────────────────────────────────────
-#  Service Bus Queue Trigger
-# ─────────────────────────────────────────────────────────
 @app.service_bus_queue_trigger(
     arg_name="msg",
     queue_name="%AZURE_QUEUE_STAGE6%",
-    connection="ServiceBusConnection"
+    connection="ServiceBusConnection",
 )
 def stage6_persist(msg: func.ServiceBusMessage):
-    body = msg.get_body().decode('utf-8')
+    body = msg.get_body().decode("utf-8")
     try:
         payload = json.loads(body)
     except Exception as e:
-        logger.error(f"[Stage6] Failed to parse message body JSON: {e}")
+        logger.error("[Stage6] Failed to parse message body JSON: %s", e)
         return
 
     job_id = payload.get("job_id")
     category = payload.get("category")
-    filtered_fields = payload.get("filtered_fields")
+    artifact_url = payload.get("artifact_url")
 
-    if not job_id or not filtered_fields or not category:
-        logger.error(f"[Stage6] Missing job_id, filtered_fields, or category in payload: {payload}")
+    if not job_id or not artifact_url or not category:
+        logger.error("[Stage6] Missing job_id, artifact_url, or category in payload: %s", payload)
         return
 
-    logger.info(f"[Stage6] Starting DB persistence for job={job_id}")
+    logger.info("[Stage6] Starting DB persistence for job=%s", job_id)
 
     try:
-        # 1. Update status to stage_6
-        _update_stage_tracking(
+        update_stage_tracking(
             job_id=job_id,
             status="stage_6",
-            current_stage="stage6_persist"
+            current_stage="stage6_persist",
+            default_current_stage="stage6_persist",
         )
-        _send_callback(job_id, "stage_6")
 
-        # 2. Add job_id to the expense fields before DB insert
+        filtered_payload = download_json_artifact(artifact_url)
+        filtered_fields = filtered_payload.get("filtered_fields", filtered_payload)
         filtered_fields["job_id"] = job_id
 
-        # 3. Save to MySQL database
         expense_ids = save_expenses_to_db([filtered_fields])
         expense_row_id = expense_ids[0] if expense_ids else None
 
-        # 4. Update tracking table to 'done'
-        _update_stage_tracking(
+        upload_json_artifact(
+            job_id,
+            6,
+            "result.json",
+            {
+                "category": category,
+                "expense_id": expense_row_id,
+                "filtered_fields": filtered_fields,
+            },
+        )
+
+        update_stage_tracking(
             job_id=job_id,
             status="done",
             expense_row_id=expense_row_id,
-            completed_stage_num=6
+            completed_stage_num=6,
         )
-
-        # 5. Send final success callback
-        _send_callback(job_id, "done", f"Successfully persisted expense_id: {expense_row_id}")
-        logger.info(f"[Stage6] Completed successfully for job={job_id} row_id={expense_row_id}")
+        logger.info("[Stage6] Completed successfully for job=%s row_id=%s", job_id, expense_row_id)
 
     except Exception as e:
         error_msg = f"Stage 6 failed: {str(e)}"
-        logger.error(f"[Stage6] {error_msg}")
-        _update_stage_tracking(job_id=job_id, status="failed", error_message=error_msg)
-        _send_callback(job_id, "failed", error_msg)
+        logger.error("[Stage6] %s", error_msg)
+        update_stage_tracking(job_id=job_id, status="failed", error_message=error_msg)

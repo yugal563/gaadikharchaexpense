@@ -160,6 +160,7 @@ class AzureOpenAIProvider(BaseLLMProvider):
             os.getenv("Key")
             or os.getenv("KEY")
             or os.getenv("AZURE_OPENAI_KEY")
+            or os.getenv("AZURE_AI_FOUNDRY_KEY")
             or ""
         ).strip().strip('"')
 
@@ -167,6 +168,7 @@ class AzureOpenAIProvider(BaseLLMProvider):
             os.getenv("Model")
             or os.getenv("MODEL")
             or os.getenv("AZURE_OPENAI_MODEL_NAME")
+            or os.getenv("AZURE_AI_FOUNDRY_MODEL")
             or "gpt-4o"
         ).strip().strip('"')
 
@@ -182,6 +184,7 @@ class AzureOpenAIProvider(BaseLLMProvider):
             os.getenv("Endpoint")
             or os.getenv("ENDPOINT")
             or os.getenv("AZURE_OPENAI_ENDPOINT")
+            or os.getenv("AZURE_AI_FOUNDRY_ENDPOINT")
             or ""
         ).strip().strip('"').rstrip("/")
 
