@@ -1,0 +1,9 @@
+.git
+.venv
+.vscode
+__pycache__
+*.pyc
+local.settings.json
+.gemini
+static/node_modules
+static/dist

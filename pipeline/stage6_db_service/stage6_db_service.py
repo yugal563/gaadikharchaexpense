@@ -1,12 +1,17 @@
-"""
-Stage 6: Database Service (Persistence)
-Handles parsing the normalized entities from Stage 5 and bulk-persisting them to MySQL database.
-"""
-
 import json
+import os
+import sys
+import logging
+import azure.functions as func
+import httpx
+import pymysql
+
+# Add wwwroot to path so relative imports like models.py, services.db work
+sys.path.append("/home/site/wwwroot")
+
 from services.db import get_connection
 from models import Expense
-from pipeline.stages.stage5_filtering import filter_fields_by_category
+from pipeline.stage5_filtering.stage5_filtering import filter_fields_by_category
 
 
 def insert_expense(cursor, expense: Expense) -> int:
@@ -24,9 +29,9 @@ def insert_expense(cursor, expense: Expense) -> int:
             vehicle, registration_no, expense_date, petrol_pump, location,
             fuel_type, liters, rate_per_liter, odometer, amount,
             total_amount, invoice_number, taxable_amount, non_taxable_amount, gst_percentage,
-            gst_amount, payment_mode, paid, paid_to, contact_number
+            gst_amount, payment_mode, paid, paid_to, contact_number, job_id
         ) VALUES (
-            %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+            %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
         )
         """
         cursor.execute(sql, (
@@ -50,6 +55,7 @@ def insert_expense(cursor, expense: Expense) -> int:
             expense.paid,
             expense.paid_to[:255] if expense.paid_to else None,
             expense.contact_number[:15] if expense.contact_number else None,
+            expense.job_id[:36] if getattr(expense, "job_id", None) else None,
         ))
         
     elif base_category == "Maintenance":
@@ -59,9 +65,9 @@ def insert_expense(cursor, expense: Expense) -> int:
             vendor_type, maintenance_item, custom_maintenance_item, action_type, odometer,
             next_service_due, work_order_number, invoice_number, amount, total_amount,
             taxable_amount, non_taxable_amount, gst_percentage, gst_amount, payment_mode,
-            paid, paid_to, contact_number, items
+            paid, paid_to, contact_number, items, job_id
         ) VALUES (
-            %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+            %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
         )
         """
         cursor.execute(sql, (
@@ -89,6 +95,7 @@ def insert_expense(cursor, expense: Expense) -> int:
             expense.paid_to[:255] if expense.paid_to else None,
             expense.contact_number[:15] if expense.contact_number else None,
             expense.items,
+            expense.job_id[:36] if getattr(expense, "job_id", None) else None,
         ))
         
     elif base_category == "Vehicle":
@@ -101,9 +108,9 @@ def insert_expense(cursor, expense: Expense) -> int:
             end_odometer_reading, journey_start_datetime, journey_end_datetime, invoice_number, amount,
             total_amount, taxable_amount, non_taxable_amount, gst_percentage, gst_amount,
             gst_invoicing_type, gst_applicable_on_parking, gst_applicable_on_toll, gst_applicable_on_other_charges, tds_percentage,
-            tds_amount, payment_mode, paid, paid_to, contact_number, items
+            tds_amount, payment_mode, paid, paid_to, contact_number, items, job_id
         ) VALUES (
-            %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+            %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
         )
         """
         cursor.execute(sql, (
@@ -148,6 +155,7 @@ def insert_expense(cursor, expense: Expense) -> int:
             expense.paid_to[:255] if expense.paid_to else None,
             expense.contact_number[:15] if expense.contact_number else None,
             expense.items,
+            expense.job_id[:36] if getattr(expense, "job_id", None) else None,
         ))
         
     else:  # Other or Custom category
@@ -156,9 +164,9 @@ def insert_expense(cursor, expense: Expense) -> int:
             vehicle, registration_no, expense_date, party_type, party,
             expense_name, vendor, location, invoice_number, amount,
             total_amount, taxable_amount, non_taxable_amount, gst_percentage, gst_amount,
-            payment_mode, paid, paid_to, contact_number, items
+            payment_mode, paid, paid_to, contact_number, items, job_id
         ) VALUES (
-            %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+            %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
         )
         """
         cursor.execute(sql, (
@@ -182,6 +190,7 @@ def insert_expense(cursor, expense: Expense) -> int:
             expense.paid_to[:255] if expense.paid_to else None,
             expense.contact_number[:15] if expense.contact_number else None,
             expense.items,
+            expense.job_id[:36] if getattr(expense, "job_id", None) else None,
         ))
         
     return cursor.lastrowid
@@ -208,3 +217,147 @@ def save_expenses_to_db(parsed_list: list[dict]) -> list[int]:
         conn.commit()
     conn.close()
     return expense_ids
+
+
+app = func.FunctionApp()
+logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────────────────
+#  Helpers
+# ─────────────────────────────────────────────────────────
+def _get_db_conn():
+    return pymysql.connect(
+        host=os.environ.get("DB_HOST", "127.0.0.1"),
+        port=int(os.environ.get("DB_PORT", 3306)),
+        user=os.environ.get("DB_USER", "root"),
+        password=os.environ.get("DB_PASSWORD", "1234"),
+        database=os.environ.get("DB_NAME", "expenses"),
+        cursorclass=pymysql.cursors.DictCursor
+    )
+
+def _update_stage_tracking(job_id: str, filename: str = None, status: str = None, 
+                           current_stage: str = None, original_url: str = None, 
+                           preprocessed_url: str = None, category: str = None, 
+                           expense_row_id: int = None, error_message: str = None, 
+                           completed_stage_num: int = None):
+    try:
+        conn = _get_db_conn()
+        with conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT 1 FROM stage_tracking WHERE job_id = %s", (job_id,))
+                exists = cursor.fetchone()
+                
+                if not exists:
+                    sql = """
+                    INSERT INTO stage_tracking (job_id, filename, status, current_stage, original_url)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """
+                    cursor.execute(sql, (job_id, filename or "unknown", status or "queued", 
+                                         current_stage or "stage6_persist", original_url))
+                else:
+                    updates = []
+                    params = []
+                    
+                    if status:
+                        updates.append("status = %s")
+                        params.append(status)
+                    if current_stage:
+                        updates.append("current_stage = %s")
+                        params.append(current_stage)
+                    if original_url:
+                        updates.append("original_url = %s")
+                        params.append(original_url)
+                    if preprocessed_url:
+                        updates.append("preprocessed_url = %s")
+                        params.append(preprocessed_url)
+                    if category:
+                        updates.append("category = %s")
+                        params.append(category)
+                    if expense_row_id is not None:
+                        updates.append("expense_row_id = %s")
+                        params.append(expense_row_id)
+                    if error_message:
+                        updates.append("error_message = %s")
+                        params.append(error_message)
+                    if completed_stage_num:
+                        updates.append(f"stage{completed_stage_num}_completed_at = CURRENT_TIMESTAMP")
+                        
+                    if updates:
+                        sql = f"UPDATE stage_tracking SET {', '.join(updates)} WHERE job_id = %s"
+                        params.append(job_id)
+                        cursor.execute(sql, tuple(params))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"[Tracking Error] Failed to update stage_tracking for job {job_id}: {e}")
+
+def _send_callback(job_id: str, status: str, detail: str = None):
+    base_url = os.environ.get("FASTAPI_BASE_URL", "http://localhost:8000")
+    url = f"{base_url}/job-status/{job_id}"
+    payload = {"status": status}
+    if detail:
+        payload["detail"] = detail
+    try:
+        httpx.post(url, json=payload, timeout=5)
+    except Exception as e:
+        logger.error(f"[Callback Error] Failed to send status to {url}: {e}")
+
+
+# ─────────────────────────────────────────────────────────
+#  Service Bus Queue Trigger
+# ─────────────────────────────────────────────────────────
+@app.service_bus_queue_trigger(
+    arg_name="msg",
+    queue_name="%AZURE_QUEUE_STAGE6%",
+    connection="ServiceBusConnection"
+)
+def stage6_persist(msg: func.ServiceBusMessage):
+    body = msg.get_body().decode('utf-8')
+    try:
+        payload = json.loads(body)
+    except Exception as e:
+        logger.error(f"[Stage6] Failed to parse message body JSON: {e}")
+        return
+
+    job_id = payload.get("job_id")
+    category = payload.get("category")
+    filtered_fields = payload.get("filtered_fields")
+
+    if not job_id or not filtered_fields or not category:
+        logger.error(f"[Stage6] Missing job_id, filtered_fields, or category in payload: {payload}")
+        return
+
+    logger.info(f"[Stage6] Starting DB persistence for job={job_id}")
+
+    try:
+        # 1. Update status to stage_6
+        _update_stage_tracking(
+            job_id=job_id,
+            status="stage_6",
+            current_stage="stage6_persist"
+        )
+        _send_callback(job_id, "stage_6")
+
+        # 2. Add job_id to the expense fields before DB insert
+        filtered_fields["job_id"] = job_id
+
+        # 3. Save to MySQL database
+        expense_ids = save_expenses_to_db([filtered_fields])
+        expense_row_id = expense_ids[0] if expense_ids else None
+
+        # 4. Update tracking table to 'done'
+        _update_stage_tracking(
+            job_id=job_id,
+            status="done",
+            expense_row_id=expense_row_id,
+            completed_stage_num=6
+        )
+
+        # 5. Send final success callback
+        _send_callback(job_id, "done", f"Successfully persisted expense_id: {expense_row_id}")
+        logger.info(f"[Stage6] Completed successfully for job={job_id} row_id={expense_row_id}")
+
+    except Exception as e:
+        error_msg = f"Stage 6 failed: {str(e)}"
+        logger.error(f"[Stage6] {error_msg}")
+        _update_stage_tracking(job_id=job_id, status="failed", error_message=error_msg)
+        _send_callback(job_id, "failed", error_msg)

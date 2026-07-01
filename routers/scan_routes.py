@@ -15,12 +15,13 @@ import os
 import asyncio
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from pipeline.stages.stage1_validation import run_stage1
-from pipeline.stages.stage2_preprocessing import run_stage2
-from pipeline.stages.stage3_extraction import run_stage3
-from pipeline.stages.stage4_mapping import run_stage4
-from pipeline.stages.stage5_filtering import run_stage5
-from pipeline.stages.stage6_db_service import save_expenses_to_db
+from pipeline.stage1_validation.stage1_validation import run_stage1
+from pipeline.stage2_preprocessing.stage2_preprocessing import run_stage2
+from pipeline.stage3_extraction.stage3_extraction import run_stage3
+from pipeline.stage4_mapping.stage4_mapping import run_stage4
+from pipeline.stage5_filtering.stage5_filtering import run_stage5
+from pipeline.stage6_db_service.stage6_db_service import save_expenses_to_db
+
 
 router = APIRouter()
 

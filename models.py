@@ -41,7 +41,7 @@ class Expense:
             "paid_to", "contact_number",
             "total_amount", "fuel_type", "payment_mode", "action_type",
             "next_service_due", "work_order_number", "start_odometer_reading", "end_odometer_reading",
-            "journey_start_datetime", "journey_end_datetime", "items"
+            "journey_start_datetime", "journey_end_datetime", "items", "job_id"
         ]
 
         # 4. Map optional fields. Ignore any custom/dynamic attributes completely.

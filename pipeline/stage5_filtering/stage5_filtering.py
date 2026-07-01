@@ -1,14 +1,19 @@
-"""
-Stage 5: Business Rule Validation & Filtering
-Applies robust date parsing, currency normalization, GST adjustments, and filters out non-relevant fields by category.
-"""
+import json
 import os
+import sys
+import logging
 import re
 from datetime import datetime
 from typing import Optional
+import azure.functions as func
+import httpx
+import pymysql
+from azure.servicebus import ServiceBusClient, ServiceBusMessage
 
-from services.llm_providers import get_llm_provider
-from pipeline.stages.schemas import CATEGORY_SCHEMAS
+# Add wwwroot to path so relative imports like pipeline.stage3_extraction work
+sys.path.append("/home/site/wwwroot")
+
+from pipeline.stage3_extraction.schemas import CATEGORY_SCHEMAS
 
 
 def run_stage5(mapped_fields: dict, category: str) -> dict:
@@ -18,7 +23,7 @@ def run_stage5(mapped_fields: dict, category: str) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Business Rule Validation (from validator.py)
+#  Business Rule Validation
 # ──────────────────────────────────────────────────────────────────────
 def parse_robust_date(date_str: str) -> Optional[datetime]:
     """Parse a date string robustly, trying multiple formats and resolving ambiguous strings."""
@@ -126,7 +131,6 @@ def validate_extracted_fields(fields: dict, category: str) -> dict:
     # ── Date validation ──
     expense_date = fields.get("expense_date")
     if expense_date:
-        # Pass to the robust parser
         dt = parse_robust_date(str(expense_date).strip())
         if dt:
             fields["expense_date"] = dt.strftime("%Y-%m-%d")
@@ -142,7 +146,6 @@ def validate_extracted_fields(fields: dict, category: str) -> dict:
             amount = float(amount)
         except (ValueError, TypeError):
             amount = 0.0
-        # Cap at 10 million (₹1 crore) — beyond this is likely a parsing error
         if amount > 10_000_000:
             amount = 0.0
         if amount < 0:
@@ -157,7 +160,6 @@ def validate_extracted_fields(fields: dict, category: str) -> dict:
         if val is not None:
             try:
                 numeric_val = float(val)
-                # Cap at 9,999,999 or discard if negative or extreme to avoid DB out-of-range errors
                 if numeric_val < 0 or numeric_val > 9_999_999:
                     fields[field_name] = None
                 else:
@@ -305,3 +307,159 @@ def filter_fields_by_category(fields: dict, category: str, include_db_keys: bool
 
     allowed = common_keys | category_keys.get(category, category_keys["Other"])
     return {k: v for k, v in fields.items() if k in allowed}
+
+
+app = func.FunctionApp()
+logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────────────────
+#  Helpers
+# ─────────────────────────────────────────────────────────
+def _get_db_conn():
+    return pymysql.connect(
+        host=os.environ.get("DB_HOST", "127.0.0.1"),
+        port=int(os.environ.get("DB_PORT", 3306)),
+        user=os.environ.get("DB_USER", "root"),
+        password=os.environ.get("DB_PASSWORD", "1234"),
+        database=os.environ.get("DB_NAME", "expenses"),
+        cursorclass=pymysql.cursors.DictCursor
+    )
+
+def _update_stage_tracking(job_id: str, filename: str = None, status: str = None, 
+                           current_stage: str = None, original_url: str = None, 
+                           preprocessed_url: str = None, category: str = None, 
+                           expense_row_id: int = None, error_message: str = None, 
+                           completed_stage_num: int = None):
+    try:
+        conn = _get_db_conn()
+        with conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT 1 FROM stage_tracking WHERE job_id = %s", (job_id,))
+                exists = cursor.fetchone()
+                
+                if not exists:
+                    sql = """
+                    INSERT INTO stage_tracking (job_id, filename, status, current_stage, original_url)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """
+                    cursor.execute(sql, (job_id, filename or "unknown", status or "queued", 
+                                         current_stage or "stage5_filter", original_url))
+                else:
+                    updates = []
+                    params = []
+                    
+                    if status:
+                        updates.append("status = %s")
+                        params.append(status)
+                    if current_stage:
+                        updates.append("current_stage = %s")
+                        params.append(current_stage)
+                    if original_url:
+                        updates.append("original_url = %s")
+                        params.append(original_url)
+                    if preprocessed_url:
+                        updates.append("preprocessed_url = %s")
+                        params.append(preprocessed_url)
+                    if category:
+                        updates.append("category = %s")
+                        params.append(category)
+                    if expense_row_id is not None:
+                        updates.append("expense_row_id = %s")
+                        params.append(expense_row_id)
+                    if error_message:
+                        updates.append("error_message = %s")
+                        params.append(error_message)
+                    if completed_stage_num:
+                        updates.append(f"stage{completed_stage_num}_completed_at = CURRENT_TIMESTAMP")
+                        
+                    if updates:
+                        sql = f"UPDATE stage_tracking SET {', '.join(updates)} WHERE job_id = %s"
+                        params.append(job_id)
+                        cursor.execute(sql, tuple(params))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"[Tracking Error] Failed to update stage_tracking for job {job_id}: {e}")
+
+def _send_callback(job_id: str, status: str, detail: str = None):
+    base_url = os.environ.get("FASTAPI_BASE_URL", "http://localhost:8000")
+    url = f"{base_url}/job-status/{job_id}"
+    payload = {"status": status}
+    if detail:
+        payload["detail"] = detail
+    try:
+        httpx.post(url, json=payload, timeout=5)
+    except Exception as e:
+        logger.error(f"[Callback Error] Failed to send status to {url}: {e}")
+
+def _forward_to_next_stage(stage_num: int, payload: dict):
+    conn_str = os.environ.get("AZURE_SERVICEBUS_CONNECTION_STRING")
+    queue_name = os.environ.get(f"AZURE_QUEUE_STAGE{stage_num}", f"receipt-stage{stage_num}")
+    client = ServiceBusClient.from_connection_string(conn_str)
+    with client:
+        with client.get_queue_sender(queue_name) as sender:
+            msg = ServiceBusMessage(json.dumps(payload, default=str))
+            sender.send_messages(msg)
+
+
+# ─────────────────────────────────────────────────────────
+#  Service Bus Queue Trigger
+# ─────────────────────────────────────────────────────────
+@app.service_bus_queue_trigger(
+    arg_name="msg",
+    queue_name="%AZURE_QUEUE_STAGE5%",
+    connection="ServiceBusConnection"
+)
+def stage5_filter(msg: func.ServiceBusMessage):
+    body = msg.get_body().decode('utf-8')
+    try:
+        payload = json.loads(body)
+    except Exception as e:
+        logger.error(f"[Stage5] Failed to parse message body JSON: {e}")
+        return
+
+    job_id = payload.get("job_id")
+    blob_url = payload.get("blob_url")
+    filename = payload.get("filename")
+    content_type = payload.get("content_type")
+    category = payload.get("category")
+    mapped_fields = payload.get("mapped_fields")
+
+    if not job_id or not mapped_fields or not category:
+        logger.error(f"[Stage5] Missing job_id, mapped_fields, or category in payload: {payload}")
+        return
+
+    logger.info(f"[Stage5] Starting filtering & business validation for job={job_id}")
+
+    try:
+        # 1. Update status to stage_5
+        _update_stage_tracking(
+            job_id=job_id,
+            status="stage_5",
+            current_stage="stage5_filter"
+        )
+        _send_callback(job_id, "stage_5")
+
+        # 2. Filter & business rules validation
+        filtered_fields = run_stage5(mapped_fields, category)
+
+        # 3. Update tracking
+        _update_stage_tracking(job_id=job_id, completed_stage_num=5)
+
+        # 4. Forward to Stage 6
+        next_payload = {
+            "job_id": job_id,
+            "blob_url": blob_url,
+            "filename": filename,
+            "content_type": content_type,
+            "category": category,
+            "filtered_fields": filtered_fields
+        }
+        _forward_to_next_stage(6, next_payload)
+        _send_callback(job_id, "stage_6")
+        logger.info(f"[Stage5] Completed successfully for job={job_id}")
+
+    except Exception as e:
+        error_msg = f"Stage 5 failed: {str(e)}"
+        logger.error(f"[Stage5] {error_msg}")
+        _update_stage_tracking(job_id=job_id, status="failed", error_message=error_msg)
+        _send_callback(job_id, "failed", error_msg)

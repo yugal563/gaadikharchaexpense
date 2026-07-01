@@ -63,7 +63,7 @@ def enqueue_stage1(
     }
     queue_name = os.getenv("AZURE_QUEUE_STAGE1", "receipt-stage1")
     _send_message(queue_name, payload)
-    print(f"[QueueService] Enqueued job {job_id} → {queue_name}")
+    print(f"[QueueService] Enqueued job {job_id} -> {queue_name}")
 
 
 # ─────────────────────────────────────────────────────────
@@ -79,4 +79,4 @@ def forward_to_stage(stage_number: int, payload: dict) -> None:
         f"AZURE_QUEUE_STAGE{stage_number}", f"receipt-stage{stage_number}"
     )
     _send_message(queue_name, payload)
-    print(f"[QueueService] Forwarded job {payload.get('job_id')} → {queue_name}")
+    print(f"[QueueService] Forwarded job {payload.get('job_id')} -> {queue_name}")

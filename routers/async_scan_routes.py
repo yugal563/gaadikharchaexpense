@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 
 from services.blob_service import upload_image
 from services.queue_service import enqueue_stage1
-from pipeline.stages.stage1_validation import normalize_content_type
+from pipeline.stage1_validation.stage1_validation import normalize_content_type
 
 router = APIRouter()
 
@@ -42,6 +42,14 @@ def update_job_status(job_id: str, status: str, detail: Optional[str] = None) ->
     """Update the status of a scan job. Called externally by Azure Function callbacks."""
     entry = _JOB_STATUS.get(job_id, {})
     entry["status"] = status
+    if status.startswith("stage_"):
+        try:
+            entry["stage"] = int(status.split("_")[1])
+        except (IndexError, ValueError):
+            pass
+    elif status == "done":
+        entry["stage"] = 6
+    
     if detail:
         entry["detail"] = detail
     _JOB_STATUS[job_id] = entry

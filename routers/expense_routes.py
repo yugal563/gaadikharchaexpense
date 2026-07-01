@@ -15,8 +15,8 @@ from fastapi import APIRouter, HTTPException
 
 from services.db import get_connection
 from models import Expense, encode_expense_id, decode_expense_id, parse_category_from_remarks
-from pipeline.stages.stage6_db_service import insert_expense
-from pipeline.stages.stage5_filtering import filter_fields_by_category
+from pipeline.stage6_db_service.stage6_db_service import insert_expense
+from pipeline.stage5_filtering.stage5_filtering import filter_fields_by_category
 
 CATEGORY_TABLE_MAP = {
     "Fuel":        ("fuel", "fuel_id"),

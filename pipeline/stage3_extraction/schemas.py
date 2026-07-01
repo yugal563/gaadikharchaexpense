@@ -1,5 +1,5 @@
 """
-pipeline/stages/schemas.py — Category field schemas for the Smart Modeling Engine.
+pipeline/stage3_extraction/schemas.py — Category field schemas for the Smart Modeling Engine.
 
 Each schema defines the fields to extract for a given category,
 along with their types and descriptions for LLM prompt construction.
