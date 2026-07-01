@@ -1,0 +1,18 @@
+# Named Cloudflare tunnel config (requires: cloudflared tunnel login)
+# Replace TUNNEL_ID and hostname with your values after setup.
+#
+#   cloudflared tunnel create gk-expense-dev
+#   cloudflared tunnel route dns gk-expense-dev mysql-gk.YOUR_DOMAIN.com
+#   cloudflared tunnel --config deploy/cloudflare/config.yml run gk-expense-dev
+
+tunnel: REPLACE_TUNNEL_ID
+credentials-file: REPLACE_CREDENTIALS_JSON
+
+ingress:
+  # Expose local MySQL to Azure Function Apps (TCP)
+  - hostname: mysql-gk.YOUR_DOMAIN.com
+    service: tcp://host.docker.internal:3307
+  # Expose pipeline status API (HTTP)
+  - hostname: status-gk.YOUR_DOMAIN.com
+    service: http://host.docker.internal:8765
+  - service: http_status:404

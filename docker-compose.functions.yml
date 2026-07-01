@@ -1,0 +1,98 @@
+# Run all 6 pipeline Azure Function containers locally (temporary dev).
+# Requires: docker compose up mysql && BUILD_ONLY=true ./deploy/build-and-push.sh
+#
+#   docker compose -f docker-compose.yml -f docker-compose.functions.yml up -d
+
+x-function-env: &function-env
+  AzureWebJobsStorage: "${AZURE_STORAGE_CONNECTION_STRING}"
+  FUNCTIONS_WORKER_RUNTIME: python
+  FUNCTIONS_EXTENSION_VERSION: "~4"
+  AzureWebJobsScriptRoot: /home/site/wwwroot
+  AZURE_SERVICEBUS_CONNECTION_STRING: ${AZURE_SERVICEBUS_CONNECTION_STRING}
+  ServiceBusConnection: ${AZURE_SERVICEBUS_CONNECTION_STRING}
+  AZURE_STORAGE_CONNECTION_STRING: ${AZURE_STORAGE_CONNECTION_STRING}
+  DB_HOST: host.docker.internal
+  DB_PORT: "3307"
+  DB_USER: root
+  DB_PASSWORD: "1234"
+  DB_NAME: expenses
+  SINGLE_PASS_MODE: "true"
+  Endpoint: ${Endpoint}
+  Key: ${Key}
+  Model: ${Model}
+  AZURE_AI_FOUNDRY_ENDPOINT: ${Endpoint}
+  AZURE_AI_FOUNDRY_KEY: ${Key}
+  AZURE_AI_FOUNDRY_MODEL: ${Model}
+
+services:
+  stage1:
+    image: gk-expense-stage1:local
+    platform: linux/amd64
+    environment:
+      <<: *function-env
+      STAGE_NUMBER: "1"
+      AZURE_STORAGE_CONTAINER: receipt-stage1
+      AZURE_QUEUE_STAGE1: receipt-stage1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  stage2:
+    image: gk-expense-stage2:local
+    platform: linux/amd64
+    environment:
+      <<: *function-env
+      STAGE_NUMBER: "2"
+      AZURE_STORAGE_CONTAINER: receipt-stage2
+      AZURE_QUEUE_STAGE2: receipt-stage2
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  stage3:
+    image: gk-expense-stage3:local
+    platform: linux/amd64
+    environment:
+      <<: *function-env
+      STAGE_NUMBER: "3"
+      AZURE_STORAGE_CONTAINER: receipt-stage3
+      AZURE_QUEUE_STAGE3: receipt-stage3
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  stage4:
+    image: gk-expense-stage4:local
+    platform: linux/amd64
+    environment:
+      <<: *function-env
+      STAGE_NUMBER: "4"
+      AZURE_STORAGE_CONTAINER: receipt-stage4
+      AZURE_QUEUE_STAGE4: receipt-stage4
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  stage5:
+    image: gk-expense-stage5:local
+    platform: linux/amd64
+    environment:
+      <<: *function-env
+      STAGE_NUMBER: "5"
+      AZURE_STORAGE_CONTAINER: receipt-stage5
+      AZURE_QUEUE_STAGE5: receipt-stage5
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  stage6:
+    image: gk-expense-stage6:local
+    platform: linux/amd64
+    environment:
+      <<: *function-env
+      STAGE_NUMBER: "6"
+      AZURE_STORAGE_CONTAINER: receipt-stage6
+      AZURE_QUEUE_STAGE6: receipt-stage6
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

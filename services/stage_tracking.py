@@ -80,7 +80,6 @@ def update_stage_tracking(
                         params.append(job_id)
                         cursor.execute(sql, tuple(params))
             conn.commit()
-        conn.close()
     except Exception as e:
         logger.error(
             "[Tracking Error] Failed to update stage_tracking for job %s: %s",
